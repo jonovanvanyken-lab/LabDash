@@ -145,3 +145,12 @@ button,a,input,select,textarea,label{touch-action:manipulation}
 .vflash b{color:var(--green);font-size:15px}
 .vflash span{font-size:12.5px;color:var(--muted)}
 .vflash.out{opacity:0;transform:translate(-50%,-10px)}
+/* v1.5: never let anything push the page wider than the screen */
+html,body{overflow-x:hidden;max-width:100%}
+#app{overflow-x:clip}
+.view>*,.stack>*,.card>*{min-width:0}
+.inline{grid-template-columns:minmax(0,1fr) auto}
+input,select,textarea{min-width:0;max-width:100%}
+input[type=file]{width:100%;font-size:14px}
+.kv span:last-child{overflow-wrap:anywhere}
+.top{width:100%}
