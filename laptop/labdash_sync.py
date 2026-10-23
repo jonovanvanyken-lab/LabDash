@@ -215,7 +215,42 @@ def write_workbook(docs, path):
         return False
 
 
+class RunLock:
+    """Stops two syncs (the scheduled one and a manual one) running at once and saving photos twice."""
+    def __init__(self):
+        self.path = STATE_DIR / "sync.lock"
+        self.held = False
+
+    def __enter__(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            if self.path.exists() and time.time() - self.path.stat().st_mtime > 600:
+                self.path.unlink()  # left behind by a sync that crashed
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            self.held = True
+        except FileExistsError:
+            pass
+        return self
+
+    def __exit__(self, *a):
+        if self.held:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
 def sync(src, passphrase, onedrive_root):
+    with RunLock() as lock:
+        if not lock.held:
+            log("Another sync is already running, so this one was skipped.")
+            return
+        _sync(src, passphrase, onedrive_root)
+
+
+def _sync(src, passphrase, onedrive_root):
     raw = src.get("vault.json")
     if raw is None:
         log("No LabDash in the repository yet. Set it up on your phone first.")
@@ -239,14 +274,18 @@ def sync(src, passphrase, onedrive_root):
             folder = project_dir(onedrive_root, projects.get(l.get("projectId")))
             folder.mkdir(parents=True, exist_ok=True)
             name = f"{base}_{stamp}" + (f"_{n}" if len(l["photos"]) > 1 else "") + ".jpg"
+            data = decrypt_image(key, json.loads(blob))
             target = folder / name
             i = 2
-            while target.exists():
-                target = folder / f"{target.stem.rsplit('~', 1)[0]}~{i}.jpg"
+            while target.exists() and target.read_bytes() != data:
+                target = folder / f"{Path(name).stem}~{i}.jpg"
                 i += 1
-            target.write_bytes(decrypt_image(key, json.loads(blob)))
+            if not target.exists():
+                target.write_bytes(data)
+                new += 1
             done.add(pid)
-            new += 1
+            st["photos"] = sorted(done)
+            save_state(st)  # record each photo straight away
     wrote = write_workbook(docs, onedrive_root / "LabDash" / "LabDash-data.xlsx")
     st["photos"] = sorted(done)
     st["last"] = time.time()
