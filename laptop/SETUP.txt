@@ -1,0 +1,16 @@
+LabDash laptop sync: one-time setup (Windows)
+
+1. Install Python 3.11 or newer from python.org (tick "Add python.exe to PATH").
+2. Put labdash_sync.py and install.bat in a folder that stays put, e.g. C:\Users\<you>\LabDashSync
+3. Double-click install.bat. It installs three small packages and then asks for:
+     - the data repository, e.g. your-username/LabDash-data
+     - a GitHub access token that can READ that repository (a separate read-only token is best)
+     - your LabDash passphrase
+     - your OneDrive folder (press Enter to accept the suggestion)
+4. That's it. Every 15 minutes it updates:
+     OneDrive\LabDash\LabDash-data.xlsx
+     photos in each project's folder (for example OneDrive\LabDash\My project\PEL-0001_2026-10-23_1411.jpg)
+
+If the workbook is open in Excel during a sync, it is skipped and updated next time.
+Log file: %LOCALAPPDATA%\LabDash\sync.log
+To stop: open a terminal in the folder and run  python labdash_sync.py remove

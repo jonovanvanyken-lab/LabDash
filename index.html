@@ -3,665 +3,88 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com; img-src 'self' data: blob:; base-uri 'none'; object-src 'none'">
-<meta name="theme-color" content="#f3f4ef" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0e1113" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0a0d0c">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="LabDash">
-<title>LabDash · Connection test</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#f3f4ef; --surface:#ffffff; --surface-2:#f6f7f3; --ink:#14181b; --muted:#5b646c; --line:#e0e3dc;
-  --accent:#0d7a69; --accent-ink:#ffffff; --accent-soft:#dcefe9;
-  --ok:#1e8a4b; --fail:#c23f2b; --warn:#a96d12; --run:#2d6cdf;
-  --shadow:0 1px 2px rgba(20,24,27,.04),0 10px 28px -14px rgba(20,24,27,.16);
-}
-@media (prefers-color-scheme: dark){
-  :root{
-    --bg:#0e1113; --surface:#161a1d; --surface-2:#1c2125; --ink:#e7ebed; --muted:#97a1a9; --line:#283037;
-    --accent:#38c3ab; --accent-ink:#04201b; --accent-soft:#11302a;
-    --ok:#46c47c; --fail:#ef6a53; --warn:#e1a945; --run:#6c9dff; --shadow:none;
-  }
-}
-*{box-sizing:border-box}
-[hidden]{display:none!important}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-.wrap{max-width:560px;margin:0 auto;padding:calc(18px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
-.mono,code,pre{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
-
-header{display:flex;align-items:center;gap:12px;margin:6px 0 6px}
-.mark{width:42px;height:42px;flex:none}
-.mark .bub{fill:var(--accent-ink);opacity:0;animation:rise 3.2s ease-in infinite}
-.mark .bub.b2{animation-delay:1.1s}.mark .bub.b3{animation-delay:2.2s}
-@keyframes rise{0%{transform:translateY(0);opacity:0}15%{opacity:.9}100%{transform:translateY(-9px);opacity:0}}
-h1{font-size:22px;line-height:1.1;margin:0;font-weight:700;letter-spacing:-.01em}
-.pill{display:inline-block;font:500 11px/1 "IBM Plex Mono",monospace;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);background:var(--accent-soft);padding:5px 7px;border-radius:6px;margin-top:5px}
-.lede{color:var(--muted);margin:12px 0 18px;font-size:14px}
-
-.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 16px;margin:0 0 14px;box-shadow:var(--shadow)}
-.card h2{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
-label{display:block;font-weight:600;font-size:14px;margin:0 0 6px}
-input[type=text]{width:100%;font:16px "IBM Plex Mono",monospace;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:11px 12px;outline:none;transition:border-color .2s, box-shadow .2s}
-input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-input.bad{border-color:var(--fail);animation:shake .35s}
-@keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
-.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.meta-row{font-size:13px;color:var(--muted);margin:8px 0 14px}
-.meta-row .mono{color:var(--ink)}
-button{font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
-.primary{width:100%;height:50px;border:0;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:16px;display:flex;align-items:center;justify-content:center;gap:10px;transition:transform .12s, opacity .2s}
-.primary:active{transform:scale(.985)}
-.primary:disabled{opacity:.45;cursor:default}
-.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);border-radius:10px;padding:8px 12px;font-size:14px;font-weight:500;transition:opacity .2s}
-.btn:disabled{opacity:.45;cursor:default}
-.link{border:0;background:none;color:var(--accent);padding:0;font-size:13px;font-weight:500;text-decoration:underline;text-underline-offset:2px}
-a{color:var(--accent)}
-
-details.howto{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
-details.howto summary{cursor:pointer;font-weight:600;font-size:14px;list-style:none;display:flex;align-items:center;gap:8px}
-details.howto summary::-webkit-details-marker{display:none}
-details.howto summary::before{content:"";width:7px;height:7px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:transform .2s;margin:0 4px 0 2px}
-details.howto[open] summary::before{transform:rotate(45deg)}
-.howto ol{margin:10px 0 0;padding-left:20px;font-size:14px}
-.howto li{margin:0 0 8px}
-.howto b{font-weight:600}
-.uri{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px dashed var(--line);border-radius:10px;padding:8px 8px 8px 10px;margin:6px 0 2px}
-.uri code{flex:1;min-width:0;font-size:12.5px;overflow-wrap:anywhere}
-
-.steps{list-style:none;margin:0;padding:0}
-.step{display:grid;grid-template-columns:32px 1fr;gap:12px;padding:9px 0;position:relative}
-.step:not(:last-child)::after{content:"";position:absolute;left:15px;top:45px;bottom:-6px;width:2px;border-radius:1px;background:var(--line);transition:background .4s}
-.step[data-state=ok]:not(:last-child)::after{background:linear-gradient(var(--ok),var(--line))}
-.ico svg{width:32px;height:32px;display:block;overflow:visible}
-.ring{fill:var(--surface);stroke:var(--line);stroke-width:2;transition:fill .3s, stroke .3s}
-.num{font:600 12px "IBM Plex Mono",monospace;fill:var(--muted);transition:opacity .2s}
-.spin{fill:none;stroke:var(--run);stroke-width:2.5;stroke-linecap:round;stroke-dasharray:22 60;opacity:0;transform-origin:16px 16px}
-.tick,.cross{fill:none;stroke:var(--surface);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:24;stroke-dashoffset:24;opacity:0}
-.step[data-state=running] .spin{opacity:1;animation:spin .9s linear infinite}
-.step[data-state=running] .ring{stroke:color-mix(in srgb,var(--run) 25%,var(--line))}
-.step[data-state=ok] .ring{fill:var(--ok);stroke:var(--ok)}
-.step[data-state=fail] .ring{fill:var(--fail);stroke:var(--fail)}
-.step[data-state=ok] .num,.step[data-state=fail] .num{opacity:0}
-.step[data-state=ok] .tick{opacity:1;animation:draw .45s .08s ease-out forwards}
-.step[data-state=fail] .cross{opacity:1;animation:draw .35s .08s ease-out forwards}
-.step[data-state=ok] .ico,.step[data-state=fail] .ico{animation:pop .42s ease-out}
-@keyframes spin{to{transform:rotate(360deg)}}
-@keyframes draw{to{stroke-dashoffset:0}}
-@keyframes pop{0%{transform:scale(.82)}60%{transform:scale(1.08)}100%{transform:scale(1)}}
-.step .t{font-weight:600;font-size:15px;line-height:1.3;padding-top:5px}
-.opt{font:500 10.5px/1 "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:3px 5px;margin-left:6px;vertical-align:2px}
-.step .d{color:var(--muted);font-size:13.5px;margin-top:2px;overflow-wrap:anywhere}
-.step[data-state=fail] .d{color:var(--ink)}
-.step .code{display:inline-block;font:500 12px "IBM Plex Mono",monospace;color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,transparent);border-radius:5px;padding:2px 6px;margin-top:6px}
-.step .act{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.step .act:empty{display:none}
-.step .golink{font-size:13px;font-weight:500}
-.thumb{margin-top:8px;border-radius:10px;max-width:160px;max-height:120px;display:block;object-fit:cover;border:1px solid var(--line);animation:fadein .5s ease-out}
-@keyframes fadein{from{opacity:0;transform:translateY(4px)}}
-.vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}
-
-.storage{display:grid;grid-template-columns:120px 1fr;gap:18px;align-items:center}
-.chips-wrap{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
-.chips-wrap .lbl{font-size:12px;color:var(--muted);margin-bottom:8px}
-.donut{position:relative;width:120px;height:120px}
-.donut svg{width:120px;height:120px;transform:rotate(-90deg)}
-.donut .track{fill:none;stroke:var(--surface-2);stroke-width:12}
-.donut .fill{fill:none;stroke:var(--accent);stroke-width:12;stroke-linecap:round;stroke-dasharray:314.16;stroke-dashoffset:314.16;transition:stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)}
-.donut .c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.donut .big{font:700 22px/1 "IBM Plex Sans",sans-serif;letter-spacing:-.02em}
-.donut .sm{font-size:11px;color:var(--muted);margin-top:3px}
-.st-num{font-weight:600;font-size:16px}
-.st-sub{color:var(--muted);font-size:13px;margin-bottom:8px}
-.chips{display:flex;flex-wrap:wrap;gap:6px}
-.chip{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px 9px 3px 7px;max-width:100%;animation:fadein .4s ease-out backwards}
-.chip svg{width:13px;height:13px;flex:none;fill:var(--warn);opacity:.85}
-.chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-
-.verdict{border-left:4px solid var(--line);transition:border-color .3s, background .3s}
-.verdict[data-tone=ok]{border-left-color:var(--ok);background:color-mix(in srgb,var(--ok) 7%,var(--surface))}
-.verdict[data-tone=fail]{border-left-color:var(--fail);background:color-mix(in srgb,var(--fail) 7%,var(--surface))}
-.verdict[data-tone=warn]{border-left-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface))}
-.verdict[data-tone=run]{border-left-color:var(--run)}
-.vt{font-size:18px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
-.verdict p{margin:0 0 12px;color:var(--muted);font-size:14px}
-.verdict[data-tone=ok] .vt{color:var(--ok)}
-.verdict[data-tone=fail] .vt{color:var(--fail)}
-.verdict[data-tone=warn] .vt{color:var(--warn)}
-pre#summary{font-size:12px;line-height:1.55;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap;margin:0 0 12px;color:var(--ink)}
-.foot{color:var(--muted);font-size:12.5px;text-align:center;margin-top:18px;padding:0 8px}
-@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}.step[data-state=ok] .tick,.step[data-state=fail] .cross{stroke-dashoffset:0}}
-</style>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css?v=1">
+<title>LabDash</title>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <svg class="mark" viewBox="0 0 42 42" aria-hidden="true">
-      <rect width="42" height="42" rx="12" fill="var(--accent)"/>
-      <path d="M17 10.5h8M18.6 10.5v8L13 28.6a2.3 2.3 0 0 0 2 3.4h12a2.3 2.3 0 0 0 2-3.4l-5.6-10.1v-8" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M15.3 25h11.4l2.3 4.2a1.4 1.4 0 0 1-1.2 2H14.2a1.4 1.4 0 0 1-1.2-2z" fill="var(--accent-ink)" opacity=".35"/>
-      <circle class="bub" cx="19.5" cy="27" r="1.2"/><circle class="bub b2" cx="22.5" cy="28" r="1"/><circle class="bub b3" cx="21" cy="26.5" r=".8"/>
-    </svg>
-    <div>
-      <h1>LabDash</h1>
-      <span class="pill">Connection test</span>
+
+<main id="lock" class="lock">
+  <div class="lock-card">
+    <div class="brand"><img src="icons/icon-192.png" alt="" width="44" height="44"><h1>LabDash</h1></div>
+    <p class="sub" id="lockSub">Checking this device…</p>
+
+    <form id="unlockForm" hidden autocomplete="off">
+      <label for="unlockPass">Passphrase</label>
+      <input id="unlockPass" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      <label class="check"><input type="checkbox" id="unlockRemember" checked> Keep unlocked on this device</label>
+      <button class="primary" type="submit">Unlock</button>
+      <p class="hint" id="unlockHint"></p>
+    </form>
+
+    <div id="startChoice" hidden>
+      <button class="primary" id="startNew" type="button">Start a new LabDash</button>
+      <button class="ghost" id="startJoin" type="button">Join one that's already synced</button>
+      <p class="fine">Everything is encrypted on this device with your passphrase before it goes anywhere.</p>
     </div>
+
+    <form id="newForm" hidden autocomplete="off">
+      <label for="newPass">Choose a passphrase</label>
+      <input id="newPass" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" minlength="10" required>
+      <label for="newPass2">Type it again</label>
+      <input id="newPass2" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" required>
+      <label class="check"><input type="checkbox" id="newRemember" checked> Keep unlocked on this device</label>
+      <p class="fine">At least 10 characters. There is no reset: keep it in a password manager.</p>
+      <button class="primary" type="submit">Create</button>
+      <button class="link" type="button" data-back>Back</button>
+      <p class="hint" id="newHint"></p>
+    </form>
+
+    <form id="joinForm" hidden autocomplete="off">
+      <label for="joinRepo">Private data repository</label>
+      <input id="joinRepo" placeholder="your-username/LabDash-data" autocapitalize="off" spellcheck="false" required>
+      <label for="joinToken">Access token</label>
+      <input id="joinToken" type="password" autocapitalize="off" spellcheck="false" required>
+      <label for="joinPass">Passphrase</label>
+      <input id="joinPass" type="password" autocapitalize="off" spellcheck="false" required>
+      <label class="check"><input type="checkbox" id="joinRemember" checked> Keep unlocked on this device</label>
+      <button class="primary" type="submit">Join</button>
+      <button class="link" type="button" data-back>Back</button>
+      <p class="hint" id="joinHint"></p>
+    </form>
+  </div>
+</main>
+
+<div id="app" hidden>
+  <header class="top">
+    <button class="icon-btn" id="backBtn" type="button" aria-label="Back" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <div class="titles"><h1 id="title">LabDash</h1><p id="subtitle"></p></div>
+    <button class="sync-pill" id="syncPill" type="button" aria-label="Sync status"><span class="dot"></span><span id="syncText">Local</span></button>
   </header>
-  <p class="lede">Checks whether VŠB lets this app reach your OneDrive. This page talks straight to Microsoft; nothing passes through GitHub or Claude.</p>
-
-  <section class="card" id="setup">
-    <h2>1 · Connect</h2>
-    <label for="cid">Application (client) ID</label>
-    <input type="text" id="cid" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
-    <div class="row meta-row">
-      <span>Directory:</span><span class="mono" id="tenantLabel">VŠB-TUO (vsb.cz)</span>
-      <button class="link" id="tenantEdit" type="button">change</button>
-    </div>
-    <div id="tenantBox" hidden style="margin:-6px 0 14px">
-      <label for="tenant">Directory (tenant) ID</label>
-      <input type="text" id="tenant" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    </div>
-    <button class="primary" id="signin" type="button">
-      <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
-      <span>Sign in with VŠB account</span>
-    </button>
-    <details class="howto" id="howto">
-      <summary>How to register the app (about 5 min)</summary>
-      <ol>
-        <li>Open <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">entra.microsoft.com</a> and sign in with your VŠB account. Go to <b>Applications → App registrations → New registration</b>.</li>
-        <li>Name: <b>Lab Dashboard</b>. Supported account types: <b>this organizational directory only</b> (single tenant).</li>
-        <li>Redirect URI: choose <b>Single-page application (SPA)</b> and paste:
-          <div class="uri"><code id="uri"></code><button class="btn" id="copyUri" type="button">Copy</button></div>
-        </li>
-        <li>Click <b>Register</b>. On the Overview page, copy the <b>Application (client) ID</b> and paste it above.</li>
-        <li>No need to add API permissions; the sign-in asks for them.</li>
-      </ol>
-    </details>
-  </section>
-
-  <section class="card">
-    <h2>2 · Checks</h2>
-    <ol class="steps" id="steps"></ol>
-  </section>
-
-  <section class="card" id="storage" hidden>
-    <h2>Your OneDrive</h2>
-    <div class="storage">
-      <div class="donut">
-        <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="track" cx="60" cy="60" r="50"/><circle class="fill" id="dFill" cx="60" cy="60" r="50"/></svg>
-        <div class="c"><div class="big" id="dPct">0%</div><div class="sm">used</div></div>
-      </div>
-      <div>
-        <div class="st-num" id="stNum"></div>
-        <div class="st-sub" id="stSub"></div>
-      </div>
-    </div>
-    <div class="chips-wrap"><div class="lbl">Top-level folders</div><div class="chips" id="chips"></div></div>
-  </section>
-
-  <section class="card verdict" id="verdict" data-tone="idle">
-    <div class="vt" id="vTitle">Waiting for sign-in</div>
-    <p id="vText">Paste the Client ID above, then sign in.</p>
-    <pre id="summary" hidden></pre>
-    <div class="row">
-      <button class="btn" id="copySum" type="button" hidden>Copy results for Claude</button>
-      <button class="btn" id="copyPhone" type="button" hidden>Copy link for your phone</button>
-      <button class="link" id="reset" type="button">Start over</button>
-    </div>
-  </section>
-
-  <p class="foot">Test files go into a <span class="mono">LabDash</span> folder in your OneDrive and are safe to delete.</p>
+  <section id="view" class="view" aria-live="polite"></section>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button type="button" data-tab="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg><span>Home</span></button>
+    <button type="button" data-tab="projects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/></svg><span>Projects</span></button>
+    <button type="button" data-tab="capture" class="fab" aria-label="New log entry or photo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button type="button" data-tab="lab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/></svg><span>Lab</span></button>
+    <button type="button" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Settings</span></button>
+  </nav>
 </div>
 
-<script>
-(() => {
-'use strict';
-const VSB_TENANT = '06ffb557-4f06-4d38-a637-4e5dfd787da2';
-const LOGIN = 'https://login.microsoftonline.com';
-const GRAPH = 'https://graph.microsoft.com/v1.0';
-const FOLDER = 'LabDash';
-const SCOPES = {
-  core: 'openid profile offline_access User.Read Files.ReadWrite',
-  calendar: 'openid profile offline_access Calendars.Read',
-  mail: 'openid profile offline_access Mail.Read'
-};
-const redirectUri = location.origin + location.pathname.replace(/index\.html?$/i, '');
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const $ = s => document.querySelector(s);
+<div id="sheet" class="sheet" hidden><div class="sheet-card" role="dialog" aria-modal="true"><div id="sheetBody"></div></div></div>
+<div id="viewer" class="viewer" hidden><img id="viewerImg" alt=""><button class="icon-btn close" id="viewerClose" type="button" aria-label="Close">✕</button></div>
+<div id="toast" class="toast" role="status" hidden></div>
 
-/* storage helpers: never fatal */
-const probe = n => { try { const s = window[n]; s.setItem('__ld', '1'); s.removeItem('__ld'); return s; } catch (e) { return null; } };
-const LS = probe('localStorage'), SS = probe('sessionStorage');
-const get = (s, k) => { try { const v = s && s.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } };
-const put = (s, k, v) => { try { s && s.setItem(k, JSON.stringify(v)); } catch (e) {} };
-const del = (s, k) => { try { s && s.removeItem(k); } catch (e) {} };
-const PEND = LS || SS;
-
-const STEPS = [
-  { id: 'signin',   title: 'Find the app and sign in', hint: 'Checks the app registration and that VŠB lets you sign in to it.' },
-  { id: 'consent',  title: 'Approve OneDrive access yourself', hint: 'Checks you can grant access without an administrator.' },
-  { id: 'read',     title: 'Read your OneDrive', hint: 'Lists your top-level folders and storage.' },
-  { id: 'write',    title: 'Save a file into OneDrive', hint: 'Creates LabDash/connection-test.txt.' },
-  { id: 'photo',    title: 'Upload a photo from this device', hint: 'Take or pick a photo; it is shrunk, then saved to LabDash.', manual: true },
-  { id: 'calendar', title: 'Read your Outlook calendar', hint: 'For deadlines. Asks for one more permission.', manual: true, optional: true },
-  { id: 'mail',     title: 'Read your Outlook email', hint: 'For linking emails to projects. Asks for one more permission.', manual: true, optional: true }
-];
-const LABEL = { signin: 'Sign in', consent: 'OneDrive permission', read: 'Read OneDrive', write: 'Save file', photo: 'Photo upload', calendar: 'Calendar', mail: 'Email' };
-
-let results = get(SS, 'ld.results') || {};
-
-/* ---------- utils ---------- */
-const b64url = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
-const rand = n => crypto.getRandomValues(new Uint8Array(n));
-const sha256 = async str => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)));
-const fmt = b => { if (b == null || isNaN(b)) return '?'; const u = ['B','KB','MB','GB','TB']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return (b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)) + ' ' + u[i]; };
-const stamp = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
-const fmtDate = s => { if (!s) return ''; const z = /z$/i.test(s); const d = new Date(String(s).slice(0, 19) + (z ? 'Z' : '')); return isNaN(d) ? '' : d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
-const pathEnc = p => p.split('/').map(encodeURIComponent).join('/');
-function deviceLabel() {
-  const ua = navigator.userAgent;
-  const dev = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Macintosh/.test(ua) ? 'Mac' : 'Other';
-  const br = /EdgiOS|Edg\//.test(ua) ? 'Edge' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'browser';
-  const standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
-  return `${dev} · ${br}${standalone ? ' (home-screen app)' : ''}`;
-}
-
-/* ---------- config ---------- */
-function getCfg() {
-  const c = get(LS, 'ld.cfg') || {};
-  return { clientId: (c.clientId || '').trim(), tenant: (c.tenant || VSB_TENANT).trim() };
-}
-function setCfg(patch) { put(LS, 'ld.cfg', Object.assign(getCfg(), patch)); }
-
-/* ---------- steps UI ---------- */
-const stepsEl = $('#steps');
-STEPS.forEach((s, i) => {
-  const li = document.createElement('li');
-  li.className = 'step'; li.id = 'step-' + s.id; li.dataset.state = 'pending';
-  li.innerHTML =
-    `<span class="ico"><svg viewBox="0 0 32 32" aria-hidden="true">
-      <circle class="ring" cx="16" cy="16" r="13"/>
-      <text class="num" x="16" y="20.2" text-anchor="middle">${i + 1}</text>
-      <circle class="spin" cx="16" cy="16" r="13"/>
-      <path class="tick" d="M10.5 16.6l3.7 3.7 7.4-8"/>
-      <path class="cross" d="M11.5 11.5l9 9M20.5 11.5l-9 9"/>
-    </svg></span>
-    <div class="body">
-      <div class="t"></div>
-      <div class="d"></div>
-      <div class="cd"></div>
-      <div class="act"></div>
-      <div class="extra"></div>
-    </div>`;
-  li.querySelector('.t').textContent = s.title;
-  if (s.optional) { const o = document.createElement('span'); o.className = 'opt'; o.textContent = 'optional'; li.querySelector('.t').appendChild(o); }
-  stepsEl.appendChild(li);
-});
-// manual actions
-(() => {
-  const photoAct = $('#step-photo .act');
-  photoAct.innerHTML = `<label class="btn" id="photoBtn" for="photoIn" style="margin:0;font-weight:500">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
-      Take or choose photo</label><input type="file" id="photoIn" class="vh" accept="image/*">`;
-  for (const k of ['calendar', 'mail']) {
-    const b = document.createElement('button');
-    b.className = 'btn'; b.type = 'button'; b.dataset.test = k; b.textContent = 'Run this test';
-    b.addEventListener('click', () => startExtra(k));
-    $('#step-' + k + ' .act').appendChild(b);
-  }
-})();
-
-function paintStep(id) {
-  const li = $('#step-' + id); if (!li) return;
-  const r = results[id], s = STEPS.find(x => x.id === id);
-  li.dataset.state = r ? r.state : 'pending';
-  li.querySelector('.d').textContent = (r && r.detail) || s.hint;
-  const cd = li.querySelector('.cd'); cd.innerHTML = '';
-  if (r && r.state === 'fail' && r.code) { const c = document.createElement('span'); c.className = 'code'; c.textContent = r.code; cd.appendChild(c); }
-  li.querySelectorAll('.golink').forEach(n => n.remove());
-  if (r && r.link) {
-    const a = document.createElement('a'); a.className = 'golink'; a.href = r.link; a.target = '_blank'; a.rel = 'noopener';
-    a.textContent = (r.linkText || 'Open') + ' ↗';
-    li.querySelector('.act').appendChild(a);
-  }
-}
-function paintAll() { STEPS.forEach(s => paintStep(s.id)); enableManual(); verdict(); }
-
-function setStep(id, state, detail, extra) {
-  extra = extra || {};
-  results[id] = { state, detail: detail || '', code: extra.code || '', kind: extra.kind || '', short: extra.short || '', link: extra.link || '', linkText: extra.linkText || '' };
-  put(SS, 'ld.results', results);
-  paintStep(id); enableManual(); verdict();
-}
-
-function tokenOk() { const t = get(SS, 'ld.token'); return !!(t && t.access && t.exp > Date.now()); }
-function enableManual() {
-  const coreOk = ['read', 'write'].every(id => results[id] && results[id].state === 'ok');
-  const signedIn = results.signin && results.signin.state === 'ok';
-  const pb = $('#photoBtn'), pi = $('#photoIn');
-  if (pb) { pb.style.opacity = coreOk ? '' : '.45'; pb.style.pointerEvents = coreOk ? '' : 'none'; pi.disabled = !coreOk; }
-  document.querySelectorAll('[data-test]').forEach(b => { b.disabled = !signedIn; b.hidden = !!(results[b.dataset.test] && results[b.dataset.test].state === 'ok'); });
-}
-
-/* ---------- verdict ---------- */
-function verdict() {
-  const st = id => results[id] && results[id].state;
-  const core = ['signin', 'consent', 'read', 'write'];
-  const v = $('#verdict');
-  let tone = 'idle', title = 'Waiting for sign-in', text = 'Paste the Client ID above, then sign in.';
-  const failed = core.find(id => st(id) === 'fail');
-  if (core.some(id => st(id) === 'running') || STEPS.some(s => st(s.id) === 'running')) {
-    tone = 'run'; title = 'Testing…'; text = 'Hang on a moment.';
-  } else if (failed) {
-    const kind = results[failed].kind;
-    if (kind === 'config') { tone = 'warn'; title = 'Almost: the registration needs a fix'; text = 'This is a setup detail, not a VŠB block. Fix what the failed step says, then sign in again.'; }
-    else if (kind === 'policy') { tone = 'fail'; title = 'VŠB blocks this route'; text = 'You can’t approve this app yourself, so option 1 is out unless IT approves it. If Microsoft offered “Request approval”, that sends it to IT. Otherwise the next step is the Power Apps route.'; }
-    else if (kind === 'device') { tone = 'warn'; title = 'Blocked on this device'; text = 'VŠB’s access policy blocked this device. Try on the laptop too: if it works there, only the phone is the problem.'; }
-    else if (kind === 'unclear') { tone = 'warn'; title = 'Not approved'; text = 'If Microsoft said “Need admin approval”, VŠB blocks this route (Power Apps is next). If you just cancelled, sign in again.'; }
-    else { tone = 'warn'; title = 'Something went wrong'; text = 'See the failed step above. Copy the results and send them to Claude.'; }
-  } else if (core.every(id => st(id) === 'ok')) {
-    tone = 'ok'; title = 'Option 1 works';
-    const bits = ['VŠB lets this app read and save to your OneDrive.'];
-    bits.push(st('photo') === 'ok' ? 'Photo upload works on this device.' : 'Now try the photo upload, ideally from your phone.');
-    const opt = ['calendar', 'mail'].filter(k => st(k) === 'fail');
-    if (opt.length) bits.push(`${opt.map(k => LABEL[k]).join(' and ')} access is blocked, so the dashboard would keep its own deadlines instead.`);
-    bits.push('Copy the results and send them to Claude.');
-    text = bits.join(' ');
-  }
-  v.dataset.tone = tone; $('#vTitle').textContent = title; $('#vText').textContent = text;
-
-  const any = STEPS.some(s => results[s.id]);
-  const sum = $('#summary');
-  if (any) {
-    const lines = [`LabDash connection test · ${new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`, `Device: ${deviceLabel()}`];
-    for (const s of STEPS) {
-      const r = results[s.id];
-      const mark = !r ? '·' : r.state === 'ok' ? '✓' : r.state === 'fail' ? '✗' : '…';
-      const extra = r ? (r.state === 'fail' ? ` ${r.code || r.short || ''}` : (r.short && r.short !== 'ok' ? ` (${r.short})` : '')) : ' not run';
-      lines.push(`${mark} ${LABEL[s.id]}${extra}`.trimEnd());
-    }
-    sum.textContent = lines.join('\n'); sum.hidden = false; $('#copySum').hidden = false;
-  } else { sum.hidden = true; $('#copySum').hidden = true; }
-  $('#copyPhone').hidden = !(tone === 'ok' && !/iPhone|Android/.test(navigator.userAgent));
-}
-
-/* ---------- error explanations ---------- */
-function explain(err, desc) {
-  desc = desc || '';
-  const m = desc.match(/AADSTS(\d+)/); const n = m ? m[1] : '';
-  const code = n ? 'AADSTS' + n : (err || 'error');
-  const first = desc.split(/\r?\n/)[0].replace(/^AADSTS\d+:\s*/, '').slice(0, 240);
-  const R = (kind, detail) => ({ kind, detail, code, short: code });
-  switch (n) {
-    case '50011': return R('config', `The redirect URI doesn’t match. In the app’s Authentication page, the Single-page application URI must be exactly ${redirectUri}`);
-    case '500113': return R('config', `No redirect URI is registered. Add ${redirectUri} under Authentication → Single-page application.`);
-    case '9002326': return R('config', 'The redirect URI is registered under “Web”. Remove it there and add it under “Single-page application” instead.');
-    case '700016': return R('config', 'Microsoft can’t find this app in VŠB’s directory. Re-copy the Application (client) ID from the app’s Overview page.');
-    case '90002': case '50059': return R('config', 'Directory not found. Check the Directory (tenant) ID.');
-    case '50105': return R('config', 'The app is set to “Assignment required”. In Entra → Enterprise applications → Lab Dashboard → Users and groups, add yourself, or switch that setting off.');
-    case '50020': return R('config', 'That account isn’t in VŠB’s directory. Sign in with your VŠB account.');
-    case '90094': case '90093': case '90008': return R('policy', 'VŠB requires an administrator to approve apps that access OneDrive, so you can’t approve it yourself.');
-    case '65001': return R('policy', 'Permission wasn’t granted for this app.');
-    case '65004': return R('unclear', 'Permission was declined. If Microsoft showed “Need admin approval”, VŠB blocks self-approval.');
-    case '53003': return R('device', 'VŠB’s Conditional Access policy blocked this sign-in, usually because this device isn’t managed by VŠB.');
-    case '53000': case '53001': return R('device', 'VŠB requires a managed or compliant device for this.');
-    case '50076': case '50079': case '50074': return R('other', 'Extra verification (MFA) is needed. Sign in again and complete it.');
-  }
-  if (err === 'access_denied') return { kind: 'unclear', code, short: code, detail: 'Access was denied or cancelled. If Microsoft showed “Need admin approval”, VŠB blocks self-approval.' };
-  return { kind: 'other', code, short: code, detail: first || `Sign-in failed (${code}).` };
-}
-function graphErr(e) {
-  if (e && e.code === 'no_token') return { kind: 'other', detail: 'Your sign-in has expired. Sign in again, then retry.', short: 'session expired' };
-  const st = e && e.status, c = (e && e.code) || 'Error', msg = (e && e.message) || 'unknown problem';
-  if (st === 0) return { kind: 'other', code: 'network', short: 'network', detail: 'Couldn’t reach Microsoft. Check the connection and try again.' };
-  if (st === 403) return { kind: 'policy', code: `403 ${c}`, short: `403 ${c}`, detail: `Microsoft refused access: ${msg}` };
-  if (st === 401) return { kind: 'other', code: `401 ${c}`, short: `401 ${c}`, detail: 'The access token was rejected. Sign in again.' };
-  return { kind: 'other', code: `${st || ''} ${c}`.trim(), short: `${st || ''} ${c}`.trim(), detail: msg };
-}
-
-/* ---------- Graph ---------- */
-async function graph(path, opts) {
-  opts = opts || {};
-  const t = get(SS, 'ld.token');
-  if (!t || !t.access || t.exp <= Date.now()) throw { code: 'no_token' };
-  let r;
-  try {
-    r = await fetch(path.startsWith('http') ? path : GRAPH + path, Object.assign({}, opts, { headers: Object.assign({ Authorization: 'Bearer ' + t.access }, opts.headers || {}) }));
-  } catch (e) { throw { status: 0, code: 'network', message: 'Network error' }; }
-  if (r.status === 204) return null;
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw { status: r.status, code: (j && j.error && j.error.code) || ('HTTP ' + r.status), message: (j && j.error && j.error.message) || r.statusText };
-  return j;
-}
-async function ensureFolder() {
-  try {
-    await graph('/me/drive/root/children', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: FOLDER, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) });
-  } catch (e) { if (e.status !== 409) throw e; }
-}
-
-/* ---------- auth (OAuth 2.0 code flow + PKCE) ---------- */
-async function startAuth(purpose) {
-  const cfg = getCfg();
-  if (!GUID.test(cfg.clientId)) { const i = $('#cid'); i.classList.remove('bad'); void i.offsetWidth; i.classList.add('bad'); i.focus(); $('#howto').open = true; return; }
-  if (!GUID.test(cfg.tenant)) { $('#tenantBox').hidden = false; $('#tenant').classList.add('bad'); return; }
-  if (!PEND || !window.crypto || !crypto.subtle) { setStep(purpose === 'core' ? 'signin' : purpose, 'fail', 'This browser is blocking storage or crypto. Open the page in Safari or Chrome directly, not inside another app.', { kind: 'other', short: 'no storage' }); return; }
-  const verifier = b64url(rand(32)), state = b64url(rand(16));
-  const challenge = b64url(await sha256(verifier));
-  const scope = SCOPES[purpose];
-  put(PEND, 'ld.pending', { state, verifier, purpose, scope, clientId: cfg.clientId, tenant: cfg.tenant });
-  const p = new URLSearchParams({ client_id: cfg.clientId, response_type: 'code', redirect_uri: redirectUri, response_mode: 'query', scope, state, code_challenge: challenge, code_challenge_method: 'S256' });
-  const me = get(SS, 'ld.me');
-  if (purpose === 'core') p.set('prompt', 'select_account'); else if (me && me.upn) p.set('login_hint', me.upn);
-  location.assign(`${LOGIN}/${encodeURIComponent(cfg.tenant)}/oauth2/v2.0/authorize?${p}`);
-}
-
-async function handleReturn() {
-  const q = new URLSearchParams(location.search);
-  if (!q.has('code') && !q.has('error')) return;
-  history.replaceState(null, '', redirectUri);
-  const pend = get(PEND, 'ld.pending'); del(PEND, 'ld.pending');
-  const purpose = (pend && pend.purpose) || 'core';
-  const stepId = purpose === 'core' ? 'signin' : purpose;
-  if (!pend || pend.state !== q.get('state')) {
-    setStep(stepId, 'fail', 'The sign-in reply didn’t match this tab. Open the page in Safari or Chrome directly (not inside another app) and try again.', { kind: 'other', short: 'state mismatch', code: 'state mismatch' });
-    return;
-  }
-  if (q.has('error')) {
-    const e = explain(q.get('error'), q.get('error_description'));
-    if (purpose === 'core' && (e.kind === 'policy' || e.kind === 'unclear')) {
-      setStep('signin', 'ok', 'You signed in, but the app wasn’t approved.', { short: 'ok' });
-      setStep('consent', 'fail', e.detail, e);
-    } else if (purpose !== 'core' && (e.kind === 'policy' || e.kind === 'unclear')) {
-      setStep(stepId, 'fail', e.detail, e);
-    } else {
-      setStep(stepId, 'fail', e.detail, e);
-    }
-    return;
-  }
-  setStep(stepId, 'running', 'Finishing sign-in…');
-  let j;
-  try {
-    const r = await fetch(`${LOGIN}/${encodeURIComponent(pend.tenant)}/oauth2/v2.0/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: pend.clientId, grant_type: 'authorization_code', code: q.get('code'), redirect_uri: redirectUri, code_verifier: pend.verifier, scope: pend.scope })
-    });
-    j = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = explain(j.error, j.error_description); setStep(stepId, 'fail', e.detail, e); return; }
-  } catch (err) {
-    setStep(stepId, 'fail', 'Couldn’t finish sign-in. Most likely the redirect URI was added under “Web” instead of “Single-page application”.', { kind: 'config', code: 'token request blocked', short: 'token request blocked' });
-    return;
-  }
-  const tok = { access: j.access_token, exp: Date.now() + ((j.expires_in || 3600) - 60) * 1000, scope: j.scope || '' };
-  put(SS, 'ld.token', tok);
-  if (purpose === 'core') await runCore(tok); else await runExtra(purpose, tok);
-}
-
-/* ---------- the checks ---------- */
-async function runCore(tok) {
-  try {
-    const me = await graph('/me?$select=displayName,userPrincipalName');
-    put(SS, 'ld.me', { upn: me.userPrincipalName });
-    setStep('signin', 'ok', `Signed in as ${me.displayName || me.userPrincipalName}.`, { short: 'ok' });
-  } catch (e) { setStep('signin', 'ok', 'Signed in.', { short: 'ok' }); }
-
-  if (!/files\.readwrite/i.test(tok.scope)) {
-    setStep('consent', 'fail', 'You signed in, but OneDrive access wasn’t included in what Microsoft granted.', { kind: 'policy', code: 'Files.ReadWrite not granted', short: 'Files.ReadWrite not granted' });
-    return;
-  }
-  setStep('consent', 'ok', 'Approved by you, with no administrator needed.', { short: 'ok' });
-
-  setStep('read', 'running', 'Reading your OneDrive…');
-  try {
-    const d = await graph('/me/drive?$select=quota,driveType,webUrl');
-    const kids = await graph('/me/drive/root/children?$top=200&$select=name,folder');
-    const folders = (kids.value || []).filter(x => x.folder).map(x => x.name).sort((a, b) => a.localeCompare(b));
-    const total = d.quota && d.quota.total, used = d.quota && d.quota.used;
-    const pct = total ? used / total * 100 : 0;
-    const pctTxt = pct < 1 ? '<1%' : Math.round(pct) + '%';
-    put(SS, 'ld.storage', { total, used, folders: folders.slice(0, 10), n: folders.length });
-    showStorage();
-    setStep('read', 'ok', `${folders.length} folder${folders.length === 1 ? '' : 's'} at the top level · ${fmt(used)} of ${fmt(total)} used.`, { short: `${fmt(total)} total, ${pctTxt} used`, link: d.webUrl, linkText: 'Open OneDrive' });
-  } catch (e) { const x = graphErr(e); setStep('read', 'fail', x.detail, x); return; }
-
-  setStep('write', 'running', 'Saving a test file…');
-  try {
-    await ensureFolder();
-    const txt = `LabDash connection test\nSaved ${new Date().toLocaleString('en-GB')} from ${deviceLabel()}.\nSafe to delete.\n`;
-    const f = await graph(`/me/drive/root:/${pathEnc(FOLDER + '/connection-test.txt')}:/content`, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: txt });
-    setStep('write', 'ok', `Saved ${FOLDER}/connection-test.txt.`, { short: 'ok', link: f && f.webUrl, linkText: 'Open file' });
-  } catch (e) { const x = graphErr(e); setStep('write', 'fail', x.detail, x); return; }
-}
-
-function showStorage() {
-  const s = get(SS, 'ld.storage'); if (!s) return;
-  $('#storage').hidden = false;
-  const pct = s.total ? s.used / s.total : 0;
-  $('#dPct').textContent = pct < 0.01 ? '<1%' : Math.round(pct * 100) + '%';
-  $('#stNum').textContent = `${fmt(s.total)} total`;
-  $('#stSub').textContent = `${fmt(s.used)} used · ${fmt(Math.max(0, (s.total || 0) - (s.used || 0)))} free`;
-  const vis = Math.max(pct, 0.012);
-  requestAnimationFrame(() => requestAnimationFrame(() => { $('#dFill').style.strokeDashoffset = (314.16 * (1 - Math.min(vis, 1))).toFixed(2); }));
-  const chips = $('#chips'); chips.innerHTML = '';
-  s.folders.forEach((name, i) => {
-    const c = document.createElement('span'); c.className = 'chip'; c.style.animationDelay = (i * 40) + 'ms';
-    c.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4.2l1.5 1.6h7.3v7.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg><span></span>';
-    c.lastChild.textContent = name; chips.appendChild(c);
-  });
-  if (s.n > s.folders.length) { const c = document.createElement('span'); c.className = 'chip'; c.textContent = `+${s.n - s.folders.length} more`; chips.appendChild(c); }
-}
-
-function shrink(file) {
-  return new Promise(resolve => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const max = 2048, s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-        const c = document.createElement('canvas');
-        c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        c.toBlob(b => { URL.revokeObjectURL(url); resolve(b && b.size < file.size ? b : file); }, 'image/jpeg', 0.82);
-      } catch (e) { URL.revokeObjectURL(url); resolve(file); }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.src = url;
-  });
-}
-
-$('#photoIn').addEventListener('change', async ev => {
-  const file = ev.target.files && ev.target.files[0]; ev.target.value = '';
-  if (!file) return;
-  if (!tokenOk()) { setStep('photo', 'fail', 'Your sign-in has expired. Sign in again, then retry.', { kind: 'other', short: 'session expired', code: 'session expired' }); return; }
-  setStep('photo', 'running', `Shrinking a ${fmt(file.size)} photo…`);
-  const blob = await shrink(file);
-  setStep('photo', 'running', `Uploading ${fmt(blob.size)}…`);
-  try {
-    await ensureFolder();
-    const ext = blob.type === 'image/jpeg' ? 'jpg' : ((file.name.split('.').pop() || 'img').toLowerCase());
-    const name = `photo-test-${stamp()}.${ext}`;
-    const f = await graph(`/me/drive/root:/${pathEnc(FOLDER + '/' + name)}:/content`, { method: 'PUT', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
-    const size = blob.size < file.size ? `${fmt(file.size)} → ${fmt(blob.size)}` : fmt(blob.size);
-    setStep('photo', 'ok', `Saved ${FOLDER}/${name} (${size}).`, { short: size, link: f && f.webUrl, linkText: 'Open photo' });
-    const ex = $('#step-photo .extra'); ex.innerHTML = '';
-    const im = document.createElement('img'); im.className = 'thumb'; im.alt = 'Uploaded photo'; im.src = URL.createObjectURL(blob); ex.appendChild(im);
-  } catch (e) { const x = graphErr(e); setStep('photo', 'fail', x.detail, x); }
-});
-
-async function startExtra(kind) {
-  const t = get(SS, 'ld.token');
-  const re = kind === 'calendar' ? /calendars\.read/i : /mail\.read/i;
-  if (t && t.exp > Date.now() && re.test(t.scope)) return runExtra(kind, t);
-  startAuth(kind);
-}
-async function runExtra(kind, tok) {
-  const re = kind === 'calendar' ? /calendars\.read/i : /mail\.read/i;
-  if (!re.test(tok.scope)) { setStep(kind, 'fail', 'You signed in, but this permission wasn’t granted.', { kind: 'policy', code: 'not granted', short: 'not granted' }); return; }
-  setStep(kind, 'running', 'Reading…');
-  try {
-    if (kind === 'calendar') {
-      const now = new Date(), end = new Date(now.getTime() + 30 * 864e5);
-      const r = await graph(`/me/calendarView?startDateTime=${encodeURIComponent(now.toISOString())}&endDateTime=${encodeURIComponent(end.toISOString())}&$top=50&$select=subject,start&$orderby=start/dateTime`, { headers: { Prefer: 'outlook.timezone="Europe/Prague"' } });
-      const ev = r.value || [], more = r['@odata.nextLink'] ? '+' : '';
-      const next = ev[0];
-      setStep('calendar', 'ok', ev.length ? `${ev.length}${more} event${ev.length === 1 ? '' : 's'} in the next 30 days · next: “${next.subject || '(no title)'}”, ${fmtDate(next.start && next.start.dateTime)}.` : 'Calendar readable; nothing in the next 30 days.', { short: 'ok' });
-    } else {
-      const r = await graph('/me/messages?$top=1&$select=subject,receivedDateTime');
-      const m = (r.value || [])[0];
-      setStep('mail', 'ok', m ? `Inbox readable · latest: “${m.subject || '(no subject)'}”, ${fmtDate(m.receivedDateTime)}.` : 'Mailbox readable; no messages found.', { short: 'ok' });
-    }
-  } catch (e) { const x = graphErr(e); setStep(kind, 'fail', x.detail, x); }
-}
-
-/* ---------- wiring ---------- */
-function copy(text, btn, label) {
-  const done = () => { const o = btn.textContent; btn.textContent = label || 'Copied'; setTimeout(() => { btn.textContent = o; }, 1600); };
-  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text) && done());
-  else if (fallbackCopy(text)) done();
-}
-function fallbackCopy(text) {
-  try { const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select(); const ok = document.execCommand('copy'); t.remove(); return ok; } catch (e) { return false; }
-}
-
-const cidIn = $('#cid'), tenIn = $('#tenant');
-(function initCfg() {
-  const q = new URLSearchParams(location.search);
-  const qc = q.get('cid'), qt = q.get('tid');
-  if (qc && GUID.test(qc)) setCfg({ clientId: qc });
-  if (qt && GUID.test(qt)) setCfg({ tenant: qt });
-  if ((qc || qt) && !q.has('code') && !q.has('error')) history.replaceState(null, '', redirectUri);
-  const cfg = getCfg();
-  cidIn.value = cfg.clientId; tenIn.value = cfg.tenant;
-  $('#tenantLabel').textContent = cfg.tenant === VSB_TENANT ? 'VŠB-TUO (vsb.cz)' : cfg.tenant;
-  if (!cfg.clientId) $('#howto').open = true;
-})();
-cidIn.addEventListener('input', () => { cidIn.classList.remove('bad'); setCfg({ clientId: cidIn.value.trim() }); });
-tenIn.addEventListener('input', () => { tenIn.classList.remove('bad'); const v = tenIn.value.trim(); setCfg({ tenant: v }); $('#tenantLabel').textContent = v === VSB_TENANT ? 'VŠB-TUO (vsb.cz)' : v; });
-$('#tenantEdit').addEventListener('click', () => { const b = $('#tenantBox'); b.hidden = !b.hidden; });
-$('#uri').textContent = redirectUri;
-$('#copyUri').addEventListener('click', e => copy(redirectUri, e.currentTarget));
-$('#signin').addEventListener('click', () => {
-  ['signin', 'consent', 'read', 'write'].forEach(id => delete results[id]);
-  put(SS, 'ld.results', results); paintAll();
-  startAuth('core');
-});
-$('#copySum').addEventListener('click', e => copy($('#summary').textContent, e.currentTarget));
-$('#copyPhone').addEventListener('click', e => copy(`${redirectUri}?cid=${getCfg().clientId}`, e.currentTarget, 'Link copied'));
-$('#reset').addEventListener('click', () => {
-  ['ld.results', 'ld.token', 'ld.me', 'ld.storage'].forEach(k => del(SS, k));
-  results = {}; $('#storage').hidden = true; $('#step-photo .extra').innerHTML = '';
-  paintAll();
-});
-
-paintAll();
-showStorage();
-handleReturn();
-})();
-</script>
+<script src="vendor/xlsx.full.min.js" defer></script>
+<script src="app.js?v=1" defer></script>
 </body>
 </html>
