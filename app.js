@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.6";
-const WHATS_NEW = "Edit samples and entries · charts per protocol · search (top right) · weekly summary · project links · tap headings to fold them";
+const APP_VERSION = "1.7";
+const WHATS_NEW = "This week is now a heading on Home; open it for details and the Weekly summary generator";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -279,10 +279,7 @@ VIEWS.home = view => {
   const logW = D().log.filter(l => !l.deleted && l.when >= wk).length;
   const doneW = D().tasks.filter(t => t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk).length;
   const overdue = open.filter(t => t.due && t.due < t0).length;
-  view.append(el("div", { class: "card green stack" }, el("div", { class: "eyebrow", text: "This week" }),
-    el("button", { class: "plain", type: "button", onclick: () => go("list", { kind: "week" }) }, el("div", { class: "big", text: logW + " log entries · " + sWeek + " samples made ›" }),
-      el("div", { class: "muted small", text: doneW + " tasks done · " + overdue + " overdue" })),
-    el("button", { class: "ghost slim", type: "button", text: "Weekly summary to paste", onclick: showWeekly })));
+  view.append(el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("list", { kind: "week" }) }, el("span", { class: "big", text: "This week" }), el("span", { class: "green-t big", text: "›" })));
   const dueCard = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Due soon" }));
   const list = el("div", { class: "list" });
   const soon = open.slice().sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 5);
@@ -328,7 +325,9 @@ VIEWS.list = (view, { kind }) => {
     view.append(box);
   } else if (kind === "week") {
     setTitle("This week", "Since Monday");
-    view.append(el("button", { class: "primary", type: "button", text: "Weekly summary to paste", onclick: showWeekly }));
+    const doneN = D().tasks.filter(t => !t.deleted && t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk).length, lateN = openTasks().filter(t => t.due && t.due < t0).length;
+    view.append(el("div", { class: "card green stack", "data-nofold": "1" }, el("div", { class: "big", text: D().log.filter(l => !l.deleted && l.when >= wk).length + " log entries · " + D().samples.filter(s => !s.deleted && s.created >= wk).length + " samples made" }), el("div", { class: "muted small", text: doneN + " tasks done · " + lateN + " overdue" })),
+      el("button", { class: "primary", type: "button", text: "Weekly summary generator", onclick: showWeekly }));
     const logs = D().log.filter(l => !l.deleted && l.when >= wk).sort((a, b) => b.when - a.when);
     const ss = D().samples.filter(s => !s.deleted && s.created >= wk).sort((a, b) => b.created - a.created);
     const done = D().tasks.filter(t => !t.deleted && t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk);
@@ -598,7 +597,7 @@ function showWeekly() {
   const body = el("div", { class: "stack" }, ta, copy);
   if (navigator.share) body.append(el("button", { class: "ghost", type: "button", text: "Share…", onclick: () => navigator.share({ text }).catch(() => {}) }));
   body.append(el("button", { class: "link", type: "button", text: "Close", onclick: closeSheet }));
-  sheet("Weekly summary", body);
+  sheet("Weekly summary generator", body);
 }
 
 /* ---------- results & charts per protocol ---------- */
