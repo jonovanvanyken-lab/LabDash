@@ -265,7 +265,10 @@ def setup():
     print("LabDash laptop sync setup\n")
     repo = input("Private data repository (e.g. your-username/LabDash-data): ").strip()
     repo = re.sub(r"^https?://github\.com/", "", repo).rstrip("/").removesuffix(".git")
-    token = getpass.getpass("GitHub access token (hidden as you type): ").strip()
+    print("Paste the GitHub token below. In this window, paste with a RIGHT-CLICK (Ctrl+V may not work), then press Enter.")
+    token = input("GitHub access token: ").strip()
+    if not token.startswith("github_pat_"):
+        raise SystemExit("That doesn't look like a fine-grained token (they start with github_pat_). Run install.bat again and paste it with a right-click.")
     src = Source(repo, token)
     try:
         info = src.repo_info()
@@ -273,7 +276,7 @@ def setup():
         raise SystemExit(f"GitHub said {e.code}. Check the repository name and that the token can read it.")
     if not info.get("private"):
         raise SystemExit("That repository is public. Make it private on GitHub first.")
-    passphrase = getpass.getpass("LabDash passphrase (hidden): ")
+    passphrase = getpass.getpass("LabDash passphrase (type it; nothing shows as you type, then press Enter): ")
     raw = src.get("vault.json")
     if raw is None:
         raise SystemExit("There's no LabDash in that repository yet. Set it up on your phone and sync first.")
@@ -319,7 +322,15 @@ def remove():
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "setup":
-        setup()
+        try:
+            setup()
+        except KeyboardInterrupt:
+            print("\nSetup was cancelled (that happens if Ctrl+C is pressed). Run install.bat again.")
+        except SystemExit as e:
+            if e.code and not isinstance(e.code, int):
+                print("\nSetup stopped: " + str(e.code))
+        except Exception as e:
+            print(f"\nSetup hit an error: {e!r}\nSend Claude a screenshot of this window.")
     elif cmd == "run":
         try:
             run()
