@@ -134,7 +134,14 @@ const proj = id => D().projects.find(p => p.id === id);
 const projName = id => (proj(id) || {}).name || "No project";
 const projColour = id => (proj(id) || {}).colour || "#22c55e";
 const prot = id => D().protocols.find(p => p.id === id);
-const sampleBy = sid => D().samples.find(s => s.sampleId === sid);
+const sampleBy = sid => D().samples.find(s => s.sampleId === sid && !s.deleted);
+/* a button that asks for a second tap before it acts */
+function confirmBtn(cls, label, confirmLabel, act) {
+  const b = el("button", { class: cls, type: "button", text: label });
+  b.onclick = async e => { e.stopPropagation(); if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = confirmLabel; b.classList.add("armed"); setTimeout(() => { if (b.isConnected) { b.dataset.c = ""; b.textContent = label; b.classList.remove("armed") } }, 4000); return } await act() };
+  return b;
+}
+async function markDeleted(o, msg) { o.deleted = true; o.updated = Date.now(); await persist(); toast(msg) }
 const openTasks = () => D().tasks.filter(t => !t.done && !t.deleted);
 function dueText(t) {
   if (t.done) return "Done"; if (!t.due) return "No date";
@@ -255,6 +262,7 @@ function taskRow(t, showProject) {
   tick.onclick = async () => { t.done = !t.done; t.completed = t.done ? todayISO() : ""; t.updated = Date.now(); await persist(); render() };
   const due = dueText(t); const late = !t.done && t.due && t.due < todayISO();
   row.append(tick, el("div", { class: "grow" }, el("div", { class: "t", text: t.title }), el("div", { class: "m " + (late ? "red-t" : ""), text: (showProject ? projName(t.projectId) + " · " : "") + due })));
+  if (!showProject) row.append(confirmBtn("x-btn", "✕", "Delete?", async () => { await markDeleted(t, "Task deleted"); render() }));
   return row;
 }
 VIEWS.projects = view => {
@@ -316,6 +324,7 @@ function logCard(l) {
   if (l.note) c.append(el("p", { class: "small", text: l.note }));
   if (l.photos && l.photos.length) c.append(photoGrid(l.photos));
   if (l.onedrivePath) c.append(el("p", { class: "fine", text: "Photo in OneDrive: " + l.onedrivePath }));
+  c.append(el("div", { class: "row", style: "justify-content:flex-end" }, confirmBtn("link del", "Delete entry", "Tap again to delete", async () => { await markDeleted(l, "Entry deleted"); render() })));
   return c;
 }
 VIEWS.sample = (view, { id }) => {
@@ -340,14 +349,20 @@ VIEWS.sample = (view, { id }) => {
   view.append(pc);
   if (s.notes) view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Notes" }), el("p", { text: s.notes })));
   view.append(el("p", { class: "fine", text: "Created " + fmtWhen(s.created) }));
+  view.append(confirmBtn("danger", "Delete sample " + s.sampleId, "Tap again to delete " + s.sampleId, async () => { await markDeleted(s, s.sampleId + " deleted"); back() }));
+  view.append(el("p", { class: "fine", text: "Deleting removes the sample and its measurements. Photo entries for it stay in the project log." }));
 };
 VIEWS.capture = (view, params) => {
   setTitle("New log entry", "Notes, photos and samples");
   const st = { projectId: params.projectId || "", photos: [] };
   const chips = el("div", { class: "chips" });
-  const sid = el("input", { type: "text", placeholder: "Sample ID (leave empty for none)", autocapitalize: "characters" });
+  const sid = el("input", { type: "text", placeholder: "Pick a project to number it", autocapitalize: "characters" });
   let manual = !!params.sampleId; if (params.sampleId) sid.value = params.sampleId;
+  let mode = params.sampleId ? "sample" : (S.capMode || "sample");
   const refreshId = () => { if (!manual) sid.value = st.projectId ? nextSampleId(st.projectId) : "" };
+  const modeSeg = el("div", { class: "seg" }); const sampleBox = el("div", { class: "stack" });
+  const setMode = m => { mode = m; S.capMode = m; sampleBox.hidden = m !== "sample"; modeSeg.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.m === m))) };
+  [["sample", "Sample"], ["none", "Not a sample"]].forEach(([m, l]) => modeSeg.append(el("button", { type: "button", "data-m": m, text: l, onclick: () => setMode(m) })));
   sid.addEventListener("input", () => manual = true);
   D().projects.filter(p => !p.deleted && p.status !== "Done").forEach(p => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(p.id === st.projectId), text: p.name }); c.onclick = () => { st.projectId = p.id; chips.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x === c))); refreshId(); upd() }; chips.append(c) });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto" }); auto.onclick = () => { manual = false; refreshId() };
@@ -358,15 +373,17 @@ VIEWS.capture = (view, params) => {
   refreshId(); upd();
   save.onclick = async () => {
     if (!st.projectId) return; save.disabled = true; save.textContent = "Saving…";
-    const s = sid.value.trim(); const photos = [];
+    const s = mode === "sample" ? sid.value.trim() : ""; const photos = [];
     for (const b of st.photos) photos.push(await storePhoto(b));
     if (s && !sampleBy(s)) D().samples.push({ id: uid("s"), sampleId: s, projectId: st.projectId, protocolId: "", protocolName: "Photo log", created: Date.now(), location: "", status: "Logged", notes: note.value.trim(), values: {}, updated: Date.now() });
     D().log.push({ id: uid("g"), when: Date.now(), projectId: st.projectId, title: title.value.trim() || s || "Untitled", note: note.value.trim(), sampleId: s, photos, updated: Date.now() });
     await persist(); toast("Saved" + (s ? " as " + s : "")); back();
   };
   view.append(el("div", { class: "stack" }, el("label", { text: "PROJECT" }), chips),
-    el("div", { class: "stack" }, el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("p", { class: "fine", text: "Numbered automatically for the project. Type over it to name it yourself, or clear it for no sample." })),
+    modeSeg, sampleBox,
     photoPicker(st), title, note, el("div", { class: "sticky-save" }, save));
+  sampleBox.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("p", { class: "fine", text: "Numbered automatically for the project. Type over it to name it yourself." }));
+  setMode(mode);
 };
 VIEWS.lab = view => {
   setTitle("Lab mode", "Pick a protocol to log samples against");
