@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.5";
-const WHATS_NEW = "Fixed the page sliding sideways when scrolling";
+const APP_VERSION = "1.6";
+const WHATS_NEW = "Edit samples and entries · charts per protocol · search (top right) · weekly summary · project links · tap headings to fold them";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -172,6 +172,13 @@ function nextSampleId(projectId) {
   return pre + "-" + String(max + 1).padStart(4, "0");
 }
 function num(v) { if (v == null || v === "") return NaN; return Number(String(v).replace(",", ".")) }
+function derivedNum(fields, values) {
+  const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
+  const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const o = {};
+  if (m > 0 && d > 0 && h > 0) o.density = m / (Math.PI * (d / 20) ** 2 * (h / 10));
+  if (d > 0 && f > 0) o.strength = f / (Math.PI * (d / 2) ** 2);
+  return o;
+}
 function derivedFor(fields, values) {
   const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const out = [];
@@ -221,6 +228,23 @@ function photoPicker(state) {
   box.append(input, label, thumbs); return box;
 }
 
+/* ---------- foldable cards (remembered per device) ---------- */
+let FOLD = {}; try { FOLD = JSON.parse(localStorage.getItem("labdash-fold") || "{}") } catch (_) {}
+function setFold(k, open) { if (open) delete FOLD[k]; else FOLD[k] = 1; try { localStorage.setItem("labdash-fold", JSON.stringify(FOLD)) } catch (_) {} }
+function autoFold(view, viewName) {
+  [...view.children].forEach(card => {
+    if (!card.classList || !card.classList.contains("card") || card.dataset.nofold) return;
+    const eb = card.firstElementChild; if (!eb || !eb.classList.contains("eyebrow")) return;
+    const key = viewName + ":" + eb.textContent.replace(/\s*[(·].*$/, "").replace(/[›▾]/g, "").trim().toLowerCase();
+    const body = el("div", { class: "fold-body " + (card.classList.contains("list") ? "list" : "stack") });
+    while (eb.nextSibling) body.append(eb.nextSibling);
+    const open = !FOLD[key]; body.hidden = !open;
+    const head = el("button", { class: "fold-head", type: "button", "aria-expanded": String(open) }, eb, el("span", { class: "chev", "aria-hidden": "true", text: "▾" }));
+    head.onclick = () => { const o = body.hidden; body.hidden = !o; head.setAttribute("aria-expanded", String(o)); setFold(key, o) };
+    card.classList.add("fold"); card.append(head, body);
+  });
+}
+
 /* ---------- navigation ---------- */
 function go(v, params = {}, root = false) { if (root) S.nav = [{ v, params }]; else S.nav.push({ v, params }); render() }
 function back() { if (S.nav.length > 1) { S.nav.pop(); render() } }
@@ -235,6 +259,7 @@ function render() {
   const root = S.nav[0].v;
   document.querySelectorAll("#tabs button[data-tab]").forEach(b => b.dataset.tab !== "capture" && (b.toggleAttribute("aria-current", b.dataset.tab === root), b.dataset.tab === root ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current")));
   (VIEWS[cur.v] || VIEWS.home)(view, cur.params || {});
+  autoFold(view, cur.v);
   window.scrollTo(0, 0);
 }
 function setTitle(t, sub) { $("title").textContent = t; $("subtitle").textContent = sub || "" }
@@ -254,9 +279,10 @@ VIEWS.home = view => {
   const logW = D().log.filter(l => !l.deleted && l.when >= wk).length;
   const doneW = D().tasks.filter(t => t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk).length;
   const overdue = open.filter(t => t.due && t.due < t0).length;
-  view.append(el("button", { class: "card green stack tapcard2", type: "button", onclick: () => go("list", { kind: "week" }) }, el("div", { class: "eyebrow", text: "This week ›" }),
-    el("div", { class: "big", text: logW + " log entries · " + sWeek + " samples made" }),
-    el("div", { class: "muted small", text: doneW + " tasks done · " + overdue + " overdue" })));
+  view.append(el("div", { class: "card green stack" }, el("div", { class: "eyebrow", text: "This week" }),
+    el("button", { class: "plain", type: "button", onclick: () => go("list", { kind: "week" }) }, el("div", { class: "big", text: logW + " log entries · " + sWeek + " samples made ›" }),
+      el("div", { class: "muted small", text: doneW + " tasks done · " + overdue + " overdue" })),
+    el("button", { class: "ghost slim", type: "button", text: "Weekly summary to paste", onclick: showWeekly })));
   const dueCard = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Due soon" }));
   const list = el("div", { class: "list" });
   const soon = open.slice().sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 5);
@@ -302,6 +328,7 @@ VIEWS.list = (view, { kind }) => {
     view.append(box);
   } else if (kind === "week") {
     setTitle("This week", "Since Monday");
+    view.append(el("button", { class: "primary", type: "button", text: "Weekly summary to paste", onclick: showWeekly }));
     const logs = D().log.filter(l => !l.deleted && l.when >= wk).sort((a, b) => b.when - a.when);
     const ss = D().samples.filter(s => !s.deleted && s.created >= wk).sort((a, b) => b.created - a.created);
     const done = D().tasks.filter(t => !t.deleted && t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk);
@@ -351,18 +378,18 @@ VIEWS.projects = view => {
 VIEWS.project = (view, { id, tab }) => {
   const p = proj(id); if (!p) return back();
   setTitle(p.name, p.summary || "");
-  const card = el("div", { class: "card stack" }, el("div", { class: "row between" }, el("div", {}, el("div", { class: "eyebrow", text: "Progress" }), el("div", { style: "font-size:32px;font-weight:800", class: "green-t", text: (p.progress || 0) + "%" })),
+  const card = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Progress · " + (p.progress || 0) + "%" }), el("div", { class: "row between" }, el("div", { style: "font-size:32px;font-weight:800", class: "green-t", text: (p.progress || 0) + "%" }),
     el("div", { class: "pm" }, el("button", { type: "button", text: "−1", onclick: () => bump(-1) }), el("button", { class: "plus", type: "button", text: "+1", onclick: () => bump(1) }))));
   const pct = card.querySelector(".green-t");
   const slider = el("input", { type: "range", min: "0", max: "100", step: "1", value: String(p.progress || 0), class: "range", "aria-label": "Progress" });
   slider.addEventListener("input", () => { pct.textContent = slider.value + "%" });
   slider.addEventListener("change", async () => { p.progress = +slider.value; p.updated = Date.now(); await persist(); toast("Progress " + p.progress + "%") });
   card.append(slider, el("p", { class: "fine", text: "Drag to set, or use −1 / +1." }));
-  if (p.status === "Archived") card.prepend(el("div", { class: "badge", style: "justify-self:start;background:#3a2e12;color:var(--amber)", text: "ARCHIVED · hidden from Home, + and Lab" }));
+  if (p.status === "Archived") view.append(el("div", { class: "badge", style: "justify-self:start;background:#3a2e12;color:var(--amber)", text: "ARCHIVED · hidden from Home, + and Lab" }));
   async function bump(n) { p.progress = Math.max(0, Math.min(100, (p.progress || 0) + n)); p.updated = Date.now(); await persist(); render() }
   const ns = el("input", { type: "text", value: p.nextStep || "", placeholder: "What's the next step?" });
   ns.addEventListener("change", async () => { p.nextStep = ns.value.trim(); p.updated = Date.now(); await persist(); toast("Next step saved") });
-  view.append(card, el("div", { class: "stack" }, el("label", { text: "NEXT STEP" }), ns));
+  view.append(card, el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Next step" }), ns), linksCard(p));
   const cur = tab || "tasks"; const seg = el("div", { class: "seg" });
   [["tasks", "Tasks"], ["log", "Log"], ["samples", "Samples"]].forEach(([k, l]) => seg.append(el("button", { type: "button", "aria-pressed": String(cur === k), text: l, onclick: () => { S.nav[S.nav.length - 1].params.tab = k; render() } })));
   view.append(seg);
@@ -383,6 +410,7 @@ VIEWS.project = (view, { id, tab }) => {
     ls.forEach(l => view.append(logCard(l))); if (!ls.length) view.append(el("p", { class: "empty", text: "No entries yet." }));
   } else {
     view.append(el("button", { class: "ghost", type: "button", text: "Open Lab mode", onclick: () => go("lab", {}, true) }));
+    D().protocols.filter(r => !r.deleted && r.projectId === p.id).forEach(r => view.append(el("button", { class: "ghost", type: "button", text: "📈 Results & charts: " + r.name, onclick: () => go("results", { id: r.id }) })));
     const ss = D().samples.filter(s => s.projectId === p.id && !s.deleted).sort((a, b) => b.created - a.created);
     const list = el("div", { class: "stack" });
     ss.forEach(s => list.append(el("button", { class: "tapcard", type: "button", onclick: () => go("sample", { id: s.id }) }, el("div", { class: "row between" }, el("span", { class: "big green-t", text: s.sampleId }), el("span", { class: "small", text: s.location || "No location" })), el("div", { class: "muted small", text: ((prot(s.protocolId) || {}).name || s.protocolName || "Photo log") + " · " + fmtWhen(s.created) }))));
@@ -425,13 +453,234 @@ function logCard(l) {
   if (l.note) c.append(el("p", { class: "small", text: l.note }));
   if (l.photos && l.photos.length) c.append(photoGrid(l.photos));
   if (l.onedrivePath) c.append(el("p", { class: "fine", text: "Photo in OneDrive: " + l.onedrivePath }));
-  c.append(el("div", { class: "row", style: "justify-content:flex-end" }, confirmBtn("link del", "Delete entry", "Tap again to delete", async () => { await markDeleted(l, "Entry deleted"); render() })));
+  c.append(el("div", { class: "row", style: "justify-content:space-between" }, el("button", { class: "link", type: "button", text: "Edit entry", onclick: () => editEntry(l) }), confirmBtn("link del", "Delete entry", "Tap again to delete", async () => { await markDeleted(l, "Entry deleted"); render() })));
   return c;
 }
+/* ---------- shared field input (lab form and edit sheet) ---------- */
+function fieldInput(f, vals) {
+  if (f.type === "Choice" || f.type === "Check") {
+    const opts = f.type === "Check" ? ["Done"] : f.options; const ch = el("div", { class: "chips" });
+    const cur = vals[f.key] != null ? String(vals[f.key]) : "";
+    const all = cur && !opts.includes(cur) ? opts.concat([cur]) : opts;
+    all.forEach(o => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(cur === o), text: o }); c.onclick = () => { vals[f.key] = vals[f.key] === o ? "" : o; ch.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x.textContent === vals[f.key]))) }; ch.append(c) });
+    return ch;
+  }
+  const inp = el("input", { type: "text", inputmode: f.type === "Number" ? "decimal" : "text", value: vals[f.key] != null ? String(vals[f.key]) : "" });
+  inp.addEventListener("input", () => { vals[f.key] = inp.value.trim() }); return inp;
+}
+
+/* ---------- edit a sample ---------- */
+function editSample(s) {
+  const pr = prot(s.protocolId);
+  const fields = pr ? pr.fields.slice().sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, type: typeof s.values[k] === "number" ? "Number" : "Text", unit: "" }));
+  const vals = Object.assign({}, s.values || {});
+  const sid = el("input", { type: "text", value: s.sampleId, autocapitalize: "characters" });
+  const loc = el("select", {}, el("option", { value: "", text: "Not set" }), ...D().locations.map(L => el("option", { value: L.name, selected: s.location === L.name, text: L.name })));
+  const status = el("input", { type: "text", value: s.status || "" });
+  const notes = el("textarea", {}); notes.value = s.notes || "";
+  const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Stored at" }), loc, el("label", { text: "Status" }), status);
+  if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
+    fields.forEach(f => body.append(el("label", { text: f.label + (f.unit ? " (" + f.unit + ")" : "") }), fieldInput(f, vals))) }
+  body.append(el("label", { text: "Notes" }), notes,
+    el("button", { class: "primary", type: "button", text: "Save changes", onclick: async () => {
+      const nid = sid.value.trim(); if (!nid) return toast("The sample needs an ID", true);
+      if (nid !== s.sampleId && sampleBy(nid)) return toast(nid + " already exists", true);
+      for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
+      const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v });
+      if (nid !== s.sampleId) D().log.forEach(l => { if (l.sampleId === s.sampleId) { l.sampleId = nid; l.updated = Date.now() } });
+      Object.assign(s, { sampleId: nid, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
+      await persist(); closeSheet(); render(); toast("Saved " + nid) } }),
+    el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
+  sheet("Edit " + s.sampleId, body);
+}
+
+/* ---------- edit a log entry ---------- */
+function editEntry(l) {
+  const title = el("input", { type: "text", value: l.title || "" });
+  const note = el("textarea", {}); note.value = l.note || "";
+  const pj = el("select", {}, ...D().projects.filter(p => !p.deleted).map(p => el("option", { value: p.id, selected: p.id === l.projectId, text: p.name })));
+  const sid = el("input", { type: "text", value: l.sampleId || "", placeholder: "No sample", autocapitalize: "characters" });
+  const removed = new Set(); const st = { photos: [] };
+  const grid = el("div", { class: "photos" });
+  (l.photos || []).forEach(id => { const b = el("button", { type: "button", class: "ph-edit", "aria-label": "Remove photo" }, el("span", { class: "ph-x", text: "✕" })); grid.append(b);
+    photoURL(id).then(u => { if (u) b.prepend(el("img", { src: u, alt: "" })) }).catch(() => {});
+    b.onclick = () => { if (removed.has(id)) { removed.delete(id); b.classList.remove("gone") } else { removed.add(id); b.classList.add("gone") } } });
+  const body = el("div", { class: "stack" }, el("label", { text: "Title" }), title, el("label", { text: "Notes" }), note, el("label", { text: "Project" }), pj, el("label", { text: "Sample ID" }), sid);
+  if ((l.photos || []).length) body.append(el("label", { text: "Photos (tap one to remove it)" }), grid);
+  body.append(el("label", { text: "Add photos" }), photoPicker(st),
+    el("button", { class: "primary", type: "button", text: "Save changes", onclick: async e => {
+      e.target.disabled = true; e.target.textContent = "Saving…";
+      const keep = (l.photos || []).filter(id => !removed.has(id)); for (const b of st.photos) keep.push(await storePhoto(b));
+      Object.assign(l, { title: title.value.trim() || l.title, note: note.value.trim(), projectId: pj.value, sampleId: sid.value.trim(), photos: keep, edited: Date.now(), updated: Date.now() });
+      await persist(); closeSheet(); render(); toast("Entry saved") } }),
+    el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
+  sheet("Edit entry", body);
+}
+
+/* ---------- project links ---------- */
+function linkIcon(u) { u = u.toLowerCase(); if (/sharepoint|onedrive|1drv\.ms|office\.com/.test(u)) return "📄"; if (/claude\.ai/.test(u)) return "✳️"; if (/doi\.org|scholar\.google|sciencedirect|springer|wiley|mdpi|researchgate|acs\.org|rsc\.org|tandfonline|arxiv/.test(u)) return "📚"; if (/outlook|mail\./.test(u)) return "✉️"; return "🔗" }
+function linksCard(p) {
+  const links = p.links || []; const card = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Links (" + links.length + ")" }));
+  const list = el("div", { class: "list" });
+  links.forEach(k => { let host = ""; try { host = new URL(k.url).hostname.replace(/^www\./, "") } catch (_) {}
+    list.append(el("div", { class: "item", style: "align-items:center" }, el("span", { class: "lk-ic", text: linkIcon(k.url) }),
+      el("a", { class: "grow lk", href: k.url, target: "_blank", rel: "noopener noreferrer" }, el("div", { class: "t", text: k.title }), el("div", { class: "m", text: host })),
+      confirmBtn("x-btn", "✕", "Remove?", async () => { p.links = (p.links || []).filter(x => x.id !== k.id); p.updated = Date.now(); await persist(); render() }))) });
+  if (!links.length) list.append(el("p", { class: "empty", text: "Keep documents, papers and Claude chats for this project here." }));
+  const t = el("input", { type: "text", placeholder: "Name, e.g. Stage 1 protocol" }), u = el("input", { type: "url", placeholder: "Paste a link (OneDrive, paper, Claude chat…)", autocapitalize: "off" });
+  const add = el("button", { class: "ghost", type: "button", text: "Add link", onclick: async () => {
+    let url = u.value.trim(); if (!url) return u.focus(); if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    try { new URL(url) } catch (_) { return toast("That doesn't look like a link", true) }
+    let name = t.value.trim(); if (!name) { try { name = new URL(url).hostname.replace(/^www\./, "") } catch (_) { name = url } }
+    (p.links = p.links || []).push({ id: uid("k"), title: name, url, added: Date.now() }); p.updated = Date.now(); await persist(); render(); toast("Link added") } });
+  card.append(list, t, u, add); return card;
+}
+
+/* ---------- search ---------- */
+VIEWS.search = view => {
+  setTitle("Search", "Samples, entries, tasks and projects");
+  const q = el("input", { type: "search", placeholder: "e.g. 30:70, crumbled, FJH-0007", autocapitalize: "off", enterkeyhint: "search" });
+  const res = el("div", { class: "stack" }); q.value = S.lastQ || "";
+  const run = () => { S.lastQ = q.value; res.replaceChildren(...searchResults(q.value)) };
+  q.addEventListener("input", run); view.append(q, res); run(); setTimeout(() => q.focus(), 60);
+};
+function searchResults(qs) {
+  const terms = qs.toLowerCase().split(/\s+/).filter(Boolean); if (!terms.length) return [el("p", { class: "empty", text: "Type to search everything: sample IDs, measurements and choices, notes, titles, tasks and project names." })];
+  const hit = parts => { const h = parts.filter(x => x != null && x !== "").join(" ").toLowerCase(); return terms.every(t => h.includes(t)) };
+  const lab = (pr, k) => { const f = pr && pr.fields.find(f => f.key === k); return f ? f.label : k };
+  const ss = D().samples.filter(s => !s.deleted && hit([s.sampleId, s.notes, s.location, s.status, (prot(s.protocolId) || {}).name || s.protocolName, projName(s.projectId), ...Object.entries(s.values || {}).map(([k, v]) => lab(prot(s.protocolId), k) + " " + v)])).sort((a, b) => b.created - a.created);
+  const ls = D().log.filter(l => !l.deleted && hit([l.title, l.note, l.sampleId, projName(l.projectId)])).sort((a, b) => b.when - a.when);
+  const ts = D().tasks.filter(t => !t.deleted && hit([t.title, t.notes, projName(t.projectId), t.priority]));
+  const ps = D().projects.filter(p => !p.deleted && hit([p.name, p.summary, p.keywords, p.nextStep, ...(p.links || []).map(k => k.title + " " + k.url)]));
+  const out = [];
+  const group = (h, arr, fn) => { if (!arr.length) return; const c = el("div", { class: "card list" }, el("div", { class: "eyebrow", text: h + " (" + arr.length + ")" })); arr.slice(0, 60).forEach(x => c.append(fn(x))); out.push(c) };
+  group("Samples", ss, sampleRow); group("Log entries", ls, entryRow); group("Tasks", ts, t => taskRow(t, true));
+  group("Projects", ps, p => el("button", { class: "item tapcard", style: "border:0;padding:10px 0;background:none", onclick: () => go("project", { id: p.id }) }, el("span", { class: "mark", style: "background:" + (p.colour || "#22c55e") }), el("div", { class: "grow" }, el("div", { class: "t", text: p.name }), el("div", { class: "m", text: (p.status || "Active") + " · " + (p.progress || 0) + "%" }))));
+  if (!out.length) out.push(el("p", { class: "empty", text: "Nothing matches “" + qs.trim() + "”." }));
+  return out;
+}
+$("searchBtn").addEventListener("click", () => go("search"));
+
+/* ---------- weekly summary ---------- */
+const meanSd = a => { const n = a.length; if (!n) return null; const m = a.reduce((x, y) => x + y, 0) / n; const sd = n > 1 ? Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (n - 1)) : 0; return { n, m, sd } };
+function fmtN(v) { if (v == null || isNaN(v)) return "–"; const a = Math.abs(v); return String(+v.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : 3)) }
+function weeklyText() {
+  const wk = weekStart(), t0 = todayISO(); const d0 = new Date(wk);
+  const f = d => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  const L = ["Weekly summary: " + f(d0) + " to " + f(new Date()), ""];
+  let any = false;
+  D().projects.filter(p => !p.deleted && p.status !== "Archived").forEach(p => {
+    const ss = D().samples.filter(s => !s.deleted && s.projectId === p.id && s.created >= wk).sort((a, b) => a.created - b.created);
+    const ls = D().log.filter(l => !l.deleted && l.projectId === p.id && l.when >= wk && !(l.sampleId && ss.some(s => s.sampleId === l.sampleId) && /·/.test(l.title)));
+    const done = D().tasks.filter(t => !t.deleted && t.projectId === p.id && t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk);
+    const next = D().tasks.filter(t => !t.deleted && !t.done && t.projectId === p.id).sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 3);
+    if (!ss.length && !ls.length && !done.length && !next.length && !p.nextStep) return;
+    any = true; L.push(p.name + " (" + (p.progress || 0) + "% complete)");
+    if (ss.length) { L.push("• Samples made: " + ss.length + " (" + ss[0].sampleId + (ss.length > 1 ? " to " + ss[ss.length - 1].sampleId : "") + ")");
+      const byP = {}; ss.forEach(s => { if (s.protocolId) (byP[s.protocolId] = byP[s.protocolId] || []).push(s) });
+      Object.entries(byP).forEach(([pid, arr]) => { const pr = prot(pid); if (!pr) return; const dn = arr.map(s => derivedNum(pr.fields, s.values || {}));
+        const de = meanSd(dn.map(x => x.density).filter(x => x > 0)), st = meanSd(dn.map(x => x.strength).filter(x => x > 0)); const parts = [];
+        if (de) parts.push("density " + fmtN(de.m) + (de.n > 1 ? " ± " + fmtN(de.sd) : "") + " g/cm³ (n=" + de.n + ")");
+        if (st) parts.push("strength " + fmtN(st.m) + (st.n > 1 ? " ± " + fmtN(st.sd) : "") + " MPa (n=" + st.n + ")");
+        if (parts.length) L.push("• Key results, " + pr.name + ": " + parts.join("; ")) }) }
+    if (ls.length) L.push("• Logged: " + ls.map(l => l.title).join("; "));
+    if (done.length) L.push("• Done: " + done.map(t => t.title).join("; "));
+    if (p.nextStep) L.push("• Next step: " + p.nextStep);
+    if (next.length) L.push("• Coming up: " + next.map(t => t.title + (t.due ? " (" + (t.due < t0 ? "overdue, " : "") + fmtDay(t.due) + ")" : "")).join("; "));
+    L.push("");
+  });
+  if (!any) L.push("Nothing logged yet this week.");
+  return L.join("\n").trim();
+}
+function showWeekly() {
+  const text = weeklyText(); const ta = el("textarea", { readonly: true, style: "min-height:300px;font-size:14px" }); ta.value = text;
+  const copy = el("button", { class: "primary", type: "button", text: "Copy", onclick: async () => { try { await navigator.clipboard.writeText(text); toast("Copied. Paste it into an email or notes.") } catch (_) { ta.focus(); ta.select(); try { document.execCommand("copy"); toast("Copied") } catch (__) { toast("Select the text and copy it", true) } } } });
+  const body = el("div", { class: "stack" }, ta, copy);
+  if (navigator.share) body.append(el("button", { class: "ghost", type: "button", text: "Share…", onclick: () => navigator.share({ text }).catch(() => {}) }));
+  body.append(el("button", { class: "link", type: "button", text: "Close", onclick: closeSheet }));
+  sheet("Weekly summary", body);
+}
+
+/* ---------- results & charts per protocol ---------- */
+const PAL = ["#22c55e", "#60a5fa", "#f5b642", "#f472b6", "#a78bfa", "#2dd4bf", "#fb923c", "#e5e7eb", "#f87171", "#a3e635"];
+function protoVars(pr) {
+  const fields = pr.fields.slice().sort((a, b) => a.step - b.step); const v = [];
+  fields.forEach(f => { if (f.type === "Number") v.push({ key: f.key, label: f.label + (f.unit ? " (" + f.unit + ")" : ""), kind: "num" }); else v.push({ key: f.key, label: f.label, kind: "cat", order: f.options || [] }) });
+  const lbl = fields.map(f => f.label.trim().toLowerCase());
+  if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
+  if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (MPa)", kind: "num" });
+  v.push({ key: "_date", label: "Date made", kind: "date" }, { key: "_loc", label: "Storage location", kind: "cat", order: D().locations.map(l => l.name) });
+  return v;
+}
+function varVal(s, key, pr) {
+  if (key === "_density" || key === "_strength") { const d = derivedNum(pr.fields, s.values || {}); return key === "_density" ? d.density : d.strength }
+  if (key === "_date") return s.created; if (key === "_loc") return s.location || ""; const v = (s.values || {})[key]; return v == null ? "" : v;
+}
+function niceTicks(lo, hi, n) { if (!(hi > lo)) { lo -= 1; hi += 1 } const s0 = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(s0)); const st = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= s0); const a = Math.floor(lo / st) * st, b = Math.ceil(hi / st) * st; const t = []; for (let x = a; x <= b + st / 2; x += st) t.push(+x.toFixed(10)); return t }
+const SVGNS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs, text) { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); if (text != null) n.textContent = text; return n }
+function drawChart(pts, o) {
+  const W = 360, H = 260, m = { l: 46, r: 12, t: 14, b: o.xKind === "cat" && o.cats.length > 4 ? 64 : 46 }; const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img", "aria-label": o.yLabel + " against " + o.xLabel });
+  const ys = pts.map(p => p.y); const yt = niceTicks(Math.min(...ys), Math.max(...ys), 5); const y0 = yt[0], y1 = yt[yt.length - 1];
+  const Y = v => m.t + ih - (v - y0) / (y1 - y0) * ih;
+  yt.forEach(t => { svg.append(sv("line", { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: "#1f2925", "stroke-width": 1 }), sv("text", { x: m.l - 6, y: Y(t) + 3.5, "text-anchor": "end", "font-size": 10, fill: "#8e9b95" }, fmtN(t))) });
+  let X, band = 0;
+  if (o.xKind === "cat") { band = iw / o.cats.length; X = (p, i) => m.l + band * (o.cats.indexOf(p.x) + 0.5) + (((i * 37) % 9) - 4) * band * 0.035;
+    o.cats.forEach((c, i) => { const cx = m.l + band * (i + 0.5); const lab = String(c).length > 10 ? String(c).slice(0, 9) + "…" : String(c);
+      svg.append(o.cats.length > 4 ? sv("text", { x: cx, y: H - m.b + 14, "text-anchor": "end", "font-size": 10, fill: "#8e9b95", transform: "rotate(-35 " + cx + " " + (H - m.b + 14) + ")" }, lab) : sv("text", { x: cx, y: H - m.b + 16, "text-anchor": "middle", "font-size": 10.5, fill: "#8e9b95" }, lab)) });
+  } else { const xs = pts.map(p => p.x); let xt;
+    if (o.xKind === "date") { const lo = Math.min(...xs), hi = Math.max(...xs), pad = Math.max((hi - lo) * 0.05, 36e5 * 12); const a = lo - pad, b = hi + pad; X = p => m.l + (p.x - a) / (b - a) * iw;
+      for (let i = 0; i < 4; i++) { const v = a + (b - a) * (i + 0.5) / 4; svg.append(sv("text", { x: m.l + (v - a) / (b - a) * iw, y: H - m.b + 16, "text-anchor": "middle", "font-size": 10, fill: "#8e9b95" }, new Date(v).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))) } }
+    else { xt = niceTicks(Math.min(...xs), Math.max(...xs), 5); const a = xt[0], b = xt[xt.length - 1]; X = p => m.l + (p.x - a) / (b - a) * iw;
+      xt.forEach(t => { const x = m.l + (t - a) / (b - a) * iw; svg.append(sv("line", { x1: x, x2: x, y1: m.t, y2: m.t + ih, stroke: "#1a2320", "stroke-width": 1 }), sv("text", { x, y: H - m.b + 16, "text-anchor": "middle", "font-size": 10, fill: "#8e9b95" }, fmtN(t))) }) } }
+  svg.append(sv("line", { x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih, stroke: "#3a4641", "stroke-width": 1 }));
+  svg.append(sv("text", { x: 12, y: m.t + ih / 2, "text-anchor": "middle", "font-size": 11, fill: "#c9d3ce", transform: "rotate(-90 12 " + (m.t + ih / 2) + ")" }, o.yLabel));
+  svg.append(sv("text", { x: m.l + iw / 2, y: H - 6, "text-anchor": "middle", "font-size": 11, fill: "#c9d3ce" }, o.xLabel));
+  if (o.xKind === "cat") o.cats.forEach((c, i) => { const g = pts.filter(p => p.x === c).map(p => p.y); if (!g.length) return; const mu = g.reduce((a, b) => a + b, 0) / g.length; const cx = m.l + band * (i + 0.5);
+    svg.append(sv("line", { x1: cx - band * 0.28, x2: cx + band * 0.28, y1: Y(mu), y2: Y(mu), stroke: "#ecf1ee", "stroke-width": 2.5, "stroke-linecap": "round", opacity: 0.8 })) });
+  pts.forEach((p, i) => { const c = sv("circle", { cx: X(p, i), cy: Y(p.y), r: 5.5, fill: p.col, "fill-opacity": 0.88, stroke: "#0a0d0c", "stroke-width": 1.2, class: "pt" }); c.append(sv("title", {}, p.label)); c.addEventListener("click", () => go("sample", { id: p.id })); svg.append(c) });
+  return svg;
+}
+VIEWS.results = (view, { id }) => {
+  const pr = prot(id); if (!pr) return back();
+  const ss = D().samples.filter(s => !s.deleted && s.protocolId === pr.id); const vars = protoVars(pr);
+  setTitle(pr.name, "Results · " + ss.length + (ss.length === 1 ? " sample" : " samples"));
+  const nums = vars.filter(v => v.kind === "num"), cats = vars.filter(v => v.kind === "cat");
+  if (!ss.length || !nums.length) { view.append(el("div", { class: "card" }, el("p", { class: "empty", text: !ss.length ? "No samples logged with this protocol yet." : "This protocol has no number fields to chart." }))); return }
+  S.chart = S.chart || {}; const C = S.chart[pr.id] = S.chart[pr.id] || { y: (nums.find(v => v.key === "_strength") || nums.find(v => v.key === "_density") || nums[0]).key, x: (cats[0] || vars.find(v => v.kind === "date")).key, c: (cats[1] || { key: "" }).key };
+  const mk = (lab, key, opts, extra) => { const s = el("select", {}, ...(extra || []).map(([v, t]) => el("option", { value: v, selected: C[key] === v, text: t })), ...opts.map(v => el("option", { value: v.key, selected: C[key] === v.key, text: v.label }))); s.addEventListener("change", () => { C[key] = s.value; draw() }); return el("div", { class: "stack", style: "gap:4px" }, el("label", { text: lab }), s) };
+  view.append(el("div", { class: "card stack", "data-nofold": "1" }, mk("Y axis (measured)", "y", nums), mk("X axis", "x", vars.filter(v => v.key !== C.y || true)), mk("Colour by", "c", cats.concat(vars.filter(v => v.kind === "date")), [["", "None"]])));
+  const area = el("div", { class: "card stack", "data-nofold": "1" }), stats = el("div", { class: "card list", "data-nofold": "1" }); view.append(area, stats);
+  function draw() {
+    const vy = vars.find(v => v.key === C.y), vx = vars.find(v => v.key === C.x), vc = vars.find(v => v.key === C.c);
+    const pts = []; let skipped = 0;
+    ss.forEach(s => { const y = num(varVal(s, vy.key, pr)); let x = varVal(s, vx.key, pr); if (vx.kind === "num") x = num(x); if (vx.kind === "cat") x = String(x || "–");
+      if (isNaN(y) || (vx.kind === "num" && isNaN(x))) { skipped++; return }
+      let cv = vc ? varVal(s, vc.key, pr) : ""; if (vc && vc.kind === "date") cv = new Date(cv).toLocaleDateString("en-GB", { day: "numeric", month: "short" }); pts.push({ x, y, c: String(cv || "–"), id: s.id, label: s.sampleId + ": " + fmtN(y) }) });
+    const ordered = (v, present) => { const o = (v && v.order || []).filter(x => present.includes(x)); return o.concat(present.filter(x => !o.includes(x)).sort()) };
+    const cvals = vc ? ordered(vc, [...new Set(pts.map(p => p.c))]) : []; pts.forEach(p => p.col = vc ? PAL[cvals.indexOf(p.c) % PAL.length] : PAL[0]);
+    area.replaceChildren(); stats.replaceChildren();
+    if (!pts.length) { area.append(el("p", { class: "empty", text: "No samples have both of those values yet." })); return }
+    const xc = vx.kind === "cat" ? ordered(vx, [...new Set(pts.map(p => p.x))]) : [];
+    area.append(drawChart(pts, { xKind: vx.kind, cats: xc, xLabel: vx.label, yLabel: vy.label }));
+    if (vc) { const lg = el("div", { class: "legend" }); cvals.forEach((c, i) => { const dot = el("span", { class: "dot" }); dot.style.background = PAL[i % PAL.length]; lg.append(el("span", { class: "lg" }, dot, c)) }); area.append(el("div", { class: "fine", text: vc.label + ":" }), lg) }
+    area.append(el("p", { class: "fine", text: (vx.kind === "cat" ? "White bars show the group mean. " : "") + "Tap a point to open that sample." + (skipped ? " " + skipped + " sample" + (skipped === 1 ? " is" : "s are") + " missing a value and not shown." : "") }));
+    const groupBy = vx.kind === "cat" ? ["x", xc, vx.label] : vc ? ["c", cvals, vc.label] : null;
+    stats.append(el("div", { class: "eyebrow", text: vy.label + (groupBy ? " by " + groupBy[2] : "") }));
+    const row = (name, arr) => { const r = meanSd(arr); stats.append(el("div", { class: "kv" }, el("span", { text: name + "  ·  n=" + r.n }), el("span", { text: fmtN(r.m) + (r.n > 1 ? " ± " + fmtN(r.sd) : "") }))) };
+    if (groupBy) groupBy[1].forEach(g => { const a = pts.filter(p => p[groupBy[0]] === g).map(p => p.y); if (a.length) row(g, a) });
+    row("All samples", pts.map(p => p.y));
+    stats.append(el("p", { class: "fine", text: "Mean ± standard deviation." }));
+  }
+  draw();
+};
+
 VIEWS.sample = (view, { id }) => {
   const s = D().samples.find(x => x.id === id); if (!s) return back();
   const pr = prot(s.protocolId);
   setTitle(s.sampleId, ((pr || {}).name || s.protocolName || "Photo log") + " · " + projName(s.projectId));
+  view.append(el("button", { class: "ghost", type: "button", text: "✎ Edit sample and measurements", onclick: () => editSample(s) }));
   const loc = el("div", { class: "chips" });
   D().locations.forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(s.location === L.name), text: L.name }); c.onclick = async () => { s.location = L.name; s.updated = Date.now(); await persist(); toast("Moved to " + L.name); render() }; loc.append(c) });
   view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }), loc));
@@ -489,9 +738,10 @@ VIEWS.capture = (view, params) => {
 VIEWS.lab = view => {
   setTitle("Lab mode", "Pick a protocol to log samples against");
   const list = el("div", { class: "stack" });
-  D().protocols.filter(p => !p.deleted && !isArchived(p.projectId)).forEach(p => list.append(el("button", { class: "tapcard stack", type: "button", onclick: () => go("run", { id: p.id }) },
+  D().protocols.filter(p => !p.deleted && !isArchived(p.projectId)).forEach(p => { const n = D().samples.filter(x => !x.deleted && x.protocolId === p.id).length; list.append(el("div", { class: "tapcard stack" },
     el("div", { class: "row" }, el("span", { class: "mark", style: "background:var(--green);height:22px" }), el("span", { class: "big", text: p.name })),
-    el("div", { class: "green-t small", text: projName(p.projectId) + " · " + p.fields.length + " fields" }), p.description ? el("div", { class: "muted small", text: p.description }) : null)));
+    el("div", { class: "green-t small", text: projName(p.projectId) + " · " + p.fields.length + " fields · " + n + (n === 1 ? " sample" : " samples") }), p.description ? el("div", { class: "muted small", text: p.description }) : null,
+    el("div", { class: "two" }, el("button", { class: "primary slim", type: "button", text: "Log samples", onclick: () => go("run", { id: p.id }) }), el("button", { class: "ghost slim", type: "button", text: "📈 Results", onclick: () => go("results", { id: p.id }) })))) });
   if (!D().protocols.length) list.append(el("div", { class: "card stack" }, el("p", { class: "muted", text: "No protocols yet. Import your Excel files in Settings, or send Claude a protocol document and paste what it gives you into Settings → Add a protocol." })));
   view.append(list);
 };
@@ -503,6 +753,7 @@ VIEWS.run = (view, { id }) => {
   setTitle(p.name, projName(p.projectId) + " · " + K.count + " saved this session");
   const top = el("div", { class: "stack" });
   if (p.docLink) top.append(el("a", { class: "link", href: p.docLink, target: "_blank", rel: "noopener", text: "Open protocol document ↗" }));
+  top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }));
   const sid = el("input", { type: "text", value: nextSampleId(p.projectId), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId) });
   const loc = el("div", { class: "chips" });

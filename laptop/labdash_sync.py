@@ -218,6 +218,15 @@ def write_workbook(docs, path):
             rows.append([s["sampleId"], when(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
         header = ["SampleID", "Created", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (MPa)", "Notes"]
         sheet(pr["name"], header, rows)
+    sheet("Links", ["Project", "Name", "Link", "Added"],
+          [[p["name"], k.get("title", ""), k.get("url", ""), when(k.get("added"))] for p in projects.values() for k in p.get("links") or []])
+    for ws in wb.worksheets:
+        if ws.title == "Links":
+            for r in ws.iter_rows(min_row=2, min_col=3, max_col=3):
+                for c in r:
+                    if c.value:
+                        c.hyperlink = c.value
+                        c.style = "Hyperlink"
     sheet("Locations", ["Location"], [[l["name"]] for l in docs.get("locations", [])])
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=path.parent)
