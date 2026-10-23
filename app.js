@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.7";
-const WHATS_NEW = "This week is now a heading on Home; open it for details and the Weekly summary generator";
+const APP_VERSION = "1.8";
+const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -168,7 +168,7 @@ function dueText(t) {
 function prefixOf(p) { return (p && p.prefix) || (p ? p.name.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() : "S") }
 function nextSampleId(projectId) {
   const p = proj(projectId); const pre = prefixOf(p); let max = 0;
-  for (const s of D().samples) { const m = String(s.sampleId || "").match(/^(.*)-(\d+)$/); if (m && m[1] === pre) max = Math.max(max, +m[2]) }
+  for (const s of D().samples) { if (s.purged) continue; const m = String(s.sampleId || "").match(/^(.*)-(\d+)$/); if (m && m[1] === pre) max = Math.max(max, +m[2]) }
   return pre + "-" + String(max + 1).padStart(4, "0");
 }
 function num(v) { if (v == null || v === "") return NaN; return Number(String(v).replace(",", ".")) }
@@ -176,14 +176,14 @@ function derivedNum(fields, values) {
   const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const o = {};
   if (m > 0 && d > 0 && h > 0) o.density = m / (Math.PI * (d / 20) ** 2 * (h / 10));
-  if (d > 0 && f > 0) o.strength = f / (Math.PI * (d / 2) ** 2);
+  if (d > 0 && f > 0) o.strength = 1000 * f / (Math.PI * (d / 2) ** 2);
   return o;
 }
 function derivedFor(fields, values) {
   const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const out = [];
   if (m > 0 && d > 0 && h > 0) out.push(["Density", (m / (Math.PI * (d / 20) ** 2 * (h / 10))).toFixed(2) + " g/cm³"]);
-  if (d > 0 && f > 0) out.push(["Strength (F/A)", (f / (Math.PI * (d / 2) ** 2)).toFixed(2) + " MPa"]);
+  if (d > 0 && f > 0) out.push(["Strength (F/A)", (1000 * f / (Math.PI * (d / 2) ** 2)).toFixed(0) + " kPa"]);
   return out;
 }
 function sheet(title, body) { const b = $("sheetBody"); b.replaceChildren(el("h2", { text: title }), body); $("sheet").hidden = false }
@@ -580,7 +580,7 @@ function weeklyText() {
       Object.entries(byP).forEach(([pid, arr]) => { const pr = prot(pid); if (!pr) return; const dn = arr.map(s => derivedNum(pr.fields, s.values || {}));
         const de = meanSd(dn.map(x => x.density).filter(x => x > 0)), st = meanSd(dn.map(x => x.strength).filter(x => x > 0)); const parts = [];
         if (de) parts.push("density " + fmtN(de.m) + (de.n > 1 ? " ± " + fmtN(de.sd) : "") + " g/cm³ (n=" + de.n + ")");
-        if (st) parts.push("strength " + fmtN(st.m) + (st.n > 1 ? " ± " + fmtN(st.sd) : "") + " MPa (n=" + st.n + ")");
+        if (st) parts.push("strength " + fmtN(st.m) + (st.n > 1 ? " ± " + fmtN(st.sd) : "") + " kPa (n=" + st.n + ")");
         if (parts.length) L.push("• Key results, " + pr.name + ": " + parts.join("; ")) }) }
     if (ls.length) L.push("• Logged: " + ls.map(l => l.title).join("; "));
     if (done.length) L.push("• Done: " + done.map(t => t.title).join("; "));
@@ -607,7 +607,7 @@ function protoVars(pr) {
   fields.forEach(f => { if (f.type === "Number") v.push({ key: f.key, label: f.label + (f.unit ? " (" + f.unit + ")" : ""), kind: "num" }); else v.push({ key: f.key, label: f.label, kind: "cat", order: f.options || [] }) });
   const lbl = fields.map(f => f.label.trim().toLowerCase());
   if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
-  if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (MPa)", kind: "num" });
+  if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (kPa)", kind: "num" });
   v.push({ key: "_date", label: "Date made", kind: "date" }, { key: "_loc", label: "Storage location", kind: "cat", order: D().locations.map(l => l.name) });
   return v;
 }
@@ -820,6 +820,18 @@ VIEWS.settings = view => {
   D().protocols.filter(p => !p.deleted).forEach(p => pc.append(el("div", { class: "row between" }, el("span", { class: "small", text: p.name + " (" + p.fields.length + " fields)" }), el("button", { class: "link", type: "button", text: "Remove", onclick: async e => { if (e.target.dataset.c !== "1") { e.target.dataset.c = "1"; e.target.textContent = "Tap again"; return } p.deleted = true; p.updated = Date.now(); await persist(); render() } }))));
   pc.append(el("button", { class: "ghost", type: "button", text: "+ Add a protocol from Claude", onclick: addProtocolSheet }));
   view.append(pc);
+  // reset a project's samples
+  const rp = el("select", {}, ...D().projects.filter(p => !p.deleted).map(p => el("option", { value: p.id, text: p.name })));
+  const alsoLog = el("input", { type: "checkbox" }); alsoLog.checked = true;
+  const rinfo = el("p", { class: "fine" }); const rupd = () => { const pid = rp.value; const ns = D().samples.filter(x => !x.deleted && x.projectId === pid).length; const nl = D().log.filter(l => !l.deleted && l.projectId === pid).length; rinfo.textContent = ns + (ns === 1 ? " sample" : " samples") + " and " + nl + (nl === 1 ? " log entry" : " log entries") + " in this project. Tasks, links, the protocol and project details are kept." }; rp.addEventListener("change", rupd); rupd();
+  view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Reset a project's samples" }),
+    el("p", { class: "muted small", text: "Deletes every sample in the project, their measurements and photo entries, and restarts sample numbering at 0001. Use it to clear test data before importing real results." }),
+    rp, el("label", { class: "check" }, alsoLog, " Also delete all of this project's other log entries"), rinfo,
+    confirmBtn("danger", "Reset samples", "Tap again: this can't be undone", async () => {
+      const pid = rp.value; const ids = new Set(); let ns = 0, nl = 0;
+      D().samples.forEach(x => { if (x.projectId === pid && !x.purged) { if (!x.deleted) ns++; ids.add(x.sampleId); x.deleted = true; x.purged = true; x.updated = Date.now() } });
+      D().log.forEach(l => { if (!l.deleted && l.projectId === pid && (alsoLog.checked || (l.sampleId && ids.has(l.sampleId)))) { l.deleted = true; l.updated = Date.now(); nl++ } });
+      await persist(); toast("Removed " + ns + " samples and " + nl + " entries. Numbering restarts at " + prefixOf(proj(pid)) + "-0001."); render() })));
   // locations
   const lc = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Storage locations" }), el("p", { class: "small", text: D().locations.map(l => l.name).join(" · ") }));
   const ln = el("input", { type: "text", placeholder: "Add a location" });
@@ -869,7 +881,9 @@ async function importExcel(files) {
   for (const f of files) books.push(XLSX.read(await f.arrayBuffer(), { type: "array" }));
   const byName = name => D().projects.find(p => p.name.toLowerCase() === String(name).trim().toLowerCase());
   for (const wb of books) for (const r of rows(wb, "Projects") || []) { if (!r.Project) continue; let p = byName(r.Project); if (!p) { p = { id: uid("j") }; D().projects.push(p) }
-    Object.assign(p, { name: String(r.Project).trim(), summary: r.Summary || "", status: r.Status || "Active", progress: Number(r.Progress) || 0, nextStep: r.NextStep || "", folder: r.Folder || "", keywords: r.Keywords || "", colour: r.Colour || "#22c55e", prefix: String(r.Prefix || "").toUpperCase(), updated: Date.now() }); n.projects++ }
+    const isNew = !p.name; const cols = { Summary: ["summary", v => v], Status: ["status", v => v || "Active"], Progress: ["progress", v => Number(v) || 0], NextStep: ["nextStep", v => v], Folder: ["folder", v => v], Keywords: ["keywords", v => v], Colour: ["colour", v => v || "#22c55e"], Prefix: ["prefix", v => String(v).toUpperCase()] };
+    p.name = String(r.Project).trim(); for (const [col, [k, f]] of Object.entries(cols)) if (col in r && (isNew || r[col] !== "")) p[k] = f(r[col]);
+    if (isNew) { p.status = p.status || "Active"; p.progress = p.progress || 0; p.colour = p.colour || "#22c55e" } p.updated = Date.now(); n.projects++ }
   for (const wb of books) for (const r of rows(wb, "Locations") || []) { const v = String(r.Location || "").trim(); if (v && !D().locations.some(l => l.name === v)) { D().locations.push({ id: uid("l"), name: v }); n.locations++ } }
   for (const wb of books) for (const r of rows(wb, "Tasks") || []) { if (!r.Task || /^example/i.test(r.Task)) continue; const p = byName(r.Project); const ex = D().tasks.find(t => t.title === r.Task && t.projectId === (p && p.id));
     const t = ex || { id: uid("t") }; Object.assign(t, { projectId: p ? p.id : "", title: String(r.Task), due: xDate(r.Due), done: truthy(r.Done), completed: xDate(r.Completed) || (truthy(r.Done) ? todayISO() : ""), priority: r.Priority || "Normal", notes: r.Notes || "", updated: Date.now() }); if (!ex) D().tasks.push(t); n.tasks++ }

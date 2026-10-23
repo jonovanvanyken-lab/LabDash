@@ -148,7 +148,7 @@ def derived(fields, values):
     import math
     m, d, h, F = by("mass"), by("diameter"), by("height"), by("breaking force")
     dens = round(m / (math.pi * (d / 20) ** 2 * (h / 10)), 3) if m and d and h else None
-    stren = round(F / (math.pi * (d / 2) ** 2), 3) if F and d else None
+    stren = round(1000 * F / (math.pi * (d / 2) ** 2), 1) if F and d else None
     return dens, stren
 
 
@@ -216,7 +216,7 @@ def write_workbook(docs, path):
             v = s.get("values") or {}
             dens, stren = derived(fields, v)
             rows.append([s["sampleId"], when(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
-        header = ["SampleID", "Created", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (MPa)", "Notes"]
+        header = ["SampleID", "Created", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
         sheet(pr["name"], header, rows)
     sheet("Links", ["Project", "Name", "Link", "Added"],
           [[p["name"], k.get("title", ""), k.get("url", ""), when(k.get("added"))] for p in projects.values() for k in p.get("links") or []])
