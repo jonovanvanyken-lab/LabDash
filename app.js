@@ -7,6 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
+const APP_VERSION = "1.4";
+const WHATS_NEW = "Version shown on launch · Check for updates in Settings · no more double-tap zoom";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -67,7 +69,7 @@ async function rememberDevice(on) {
 /* ---------- boot / lock ---------- */
 function showOnly(id) { ["unlockForm", "startChoice", "newForm", "joinForm"].forEach(x => $(x).hidden = x !== id) }
 async function boot() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
   let vault = null; try { vault = await kvGet("vault") } catch (e) { $("lockSub").textContent = "This browser is blocking storage. Open LabDash in Safari or Chrome directly."; return }
   if (!vault) { $("lockSub").textContent = "Welcome. Set up this device:"; showOnly("startChoice"); return }
   const dev = await kvGet("devkey").catch(() => null);
@@ -79,7 +81,7 @@ async function boot() {
 }
 async function start(raw, k, docs, keys) {
   S.raw = raw; S.key = k; S.docs = ensureShape(docs); S.keys = keys;
-  $("lock").hidden = true; $("app").hidden = false; go("home", {}, true); setSyncUI(); syncSoon(600);
+  $("lock").hidden = true; $("app").hidden = false; go("home", {}, true); setSyncUI(); syncSoon(600); flashVersion();
 }
 $("unlockForm").addEventListener("submit", async e => {
   e.preventDefault(); const h = $("unlockHint"); h.className = "hint"; h.textContent = "Unlocking…";
@@ -110,6 +112,19 @@ $("joinForm").addEventListener("submit", async e => {
     $("joinToken").value = $("joinPass").value = ""; toast("Joined. Everything is synced.");
   } catch (err) { h.className = "hint err"; h.textContent = syncError(err) }
 });
+
+/* ---------- version flash + updates ---------- */
+function flashVersion() {
+  let seen = null; try { seen = localStorage.getItem("labdash-version"); localStorage.setItem("labdash-version", APP_VERSION) } catch (_) {}
+  const b = el("div", { class: "vflash" }, el("b", { text: "LabDash v" + APP_VERSION }), seen && seen !== APP_VERSION ? el("span", { text: "Updated · " + WHATS_NEW }) : null);
+  document.body.append(b); setTimeout(() => b.classList.add("out"), seen && seen !== APP_VERSION ? 4200 : 1600); setTimeout(() => b.remove(), 5000);
+}
+async function forceUpdate() {
+  toast("Fetching the latest version…");
+  try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())) } catch (_) {}
+  try { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))) } catch (_) {}
+  location.replace(location.pathname + "?u=" + Date.now());
+}
 
 /* ---------- helpers ---------- */
 function el(tag, attrs, ...kids) {
@@ -565,6 +580,8 @@ VIEWS.settings = view => {
     el("button", { class: "ghost", type: "button", text: "Lock now", onclick: async () => { await rememberDevice(false); location.reload() } }),
     el("button", { class: "ghost", type: "button", text: "Download an encrypted backup", onclick: async () => { const rec = await sealObj(stripDevice(D())); const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(rec)], { type: "application/json" })), download: "labdash-backup-" + todayISO() + ".json" }); a.click() } }),
     el("p", { class: "fine", text: "The backup opens with your passphrase. Photos are kept in the synced repository." })));
+  view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "App version" }), el("div", { class: "big", text: "v" + APP_VERSION }), el("p", { class: "muted small", text: "Latest changes: " + WHATS_NEW }),
+    el("button", { class: "ghost", type: "button", text: "Check for updates", onclick: forceUpdate }), el("p", { class: "fine", text: "Reloads the newest app code. Your data stays on this device." })));
 };
 function editProject(p) {
   const isNew = !p; p = p || { id: uid("j"), name: "", summary: "", status: "Active", progress: 0, nextStep: "", folder: "", keywords: "", colour: "#22c55e", prefix: "" };

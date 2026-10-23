@@ -6,7 +6,7 @@
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
-html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+html,body{touch-action:manipulation;margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
 h1,h2,h3,p{margin:0}
@@ -140,3 +140,8 @@ button.stat:active,.tapcard2:active{filter:brightness(1.25)}
 .tapcard2{display:grid;width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer}
 .item.tapcard{width:100%;text-align:left;color:inherit;font:inherit;border-radius:0}
 .item.tapcard + .item.tapcard{border-top:1px solid #1c2420!important}
+button,a,input,select,textarea,label{touch-action:manipulation}
+.vflash{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top));transform:translateX(-50%);z-index:50;display:grid;gap:2px;justify-items:center;text-align:center;background:var(--surf2);border:1px solid var(--green);color:var(--ink);padding:10px 16px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.5);max-width:min(92vw,520px);transition:opacity .6s,transform .6s}
+.vflash b{color:var(--green);font-size:15px}
+.vflash span{font-size:12.5px;color:var(--muted)}
+.vflash.out{opacity:0;transform:translate(-50%,-10px)}
