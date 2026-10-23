@@ -180,9 +180,26 @@ def write_workbook(docs, path):
     sheet("Projects", ["Project", "Summary", "Status", "Progress %", "Next step", "Folder", "Keywords", "Prefix"],
           [[p["name"], p.get("summary", ""), p.get("status", ""), p.get("progress", 0), p.get("nextStep", ""), p.get("folder", ""),
             p.get("keywords", ""), p.get("prefix", "")] for p in projects.values()], first=True)
-    sheet("Tasks", ["Task", "Project", "Due", "Done", "Completed", "Priority", "Notes"],
-          [[t["title"], pname(t.get("projectId")), day(t.get("due")), bool(t.get("done")), day(t.get("completed")), t.get("priority", ""), t.get("notes", "")]
-           for t in sorted(docs.get("tasks", []), key=lambda t: (bool(t.get("done")), t.get("due") or "9999")) if not t.get("deleted")])
+    allp = {p["id"]: p for p in docs.get("projects", [])}
+    pname_any = lambda i: (allp.get(i) or {}).get("name", "")
+
+    def tstatus(t):
+        if t.get("deleted"):
+            return "Deleted"
+        if t.get("done"):
+            return "Done"
+        if (allp.get(t.get("projectId")) or {}).get("status") == "Archived":
+            return "Open (project archived)"
+        if t.get("due") and t["due"] < dt.date.today().isoformat():
+            return "Overdue"
+        return "Open"
+    order = {"Overdue": 0, "Open": 1, "Open (project archived)": 2, "Done": 3, "Deleted": 4}
+    tasks = sorted(docs.get("tasks", []), key=lambda t: (order[tstatus(t)], t.get("due") or "9999"))
+    sheet("Tasks", ["Task", "Project", "Status", "Due", "Completed", "Priority", "Created", "Last change", "Notes"],
+          [[t["title"], pname_any(t.get("projectId")), tstatus(t), day(t.get("due")), day(t.get("completed")), t.get("priority", ""), when(t.get("created")),
+            when(max([h.get("at", 0) for h in t.get("history") or []] or [0])), t.get("notes", "")] for t in tasks])
+    events = sorted([(h.get("at", 0), t, h) for t in docs.get("tasks", []) for h in t.get("history") or []], key=lambda x: -x[0])
+    sheet("Task history", ["When", "Task", "Project", "Change"], [[when(a), t["title"], pname_any(t.get("projectId")), h.get("what", "")] for a, t, h in events])
     sheet("Log", ["Logged", "Project", "Title", "Note", "Sample", "Photos"],
           [[when(l.get("when")), pname(l.get("projectId")), l.get("title", ""), l.get("note", ""), l.get("sampleId", ""), len(l.get("photos") or [])]
            for l in sorted(docs.get("log", []), key=lambda l: -(l.get("when") or 0)) if not l.get("deleted")])

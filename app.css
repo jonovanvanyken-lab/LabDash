@@ -133,3 +133,5 @@ textarea{min-height:110px;resize:vertical}
 .link.del{color:var(--muted);font-size:13px}
 .link.del.armed{color:var(--red)}
 .danger.armed{background:#3a1717}
+.tap{cursor:pointer}
+.range{width:100%;accent-color:var(--green);height:28px}

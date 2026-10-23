@@ -142,7 +142,9 @@ function confirmBtn(cls, label, confirmLabel, act) {
   return b;
 }
 async function markDeleted(o, msg) { o.deleted = true; o.updated = Date.now(); await persist(); toast(msg) }
-const openTasks = () => D().tasks.filter(t => !t.done && !t.deleted);
+const isArchived = id => (proj(id) || {}).status === "Archived";
+const openTasks = () => D().tasks.filter(t => !t.done && !t.deleted && !isArchived(t.projectId));
+function taskEvent(t, what) { (t.history = t.history || []).push({ id: uid("h"), at: Date.now(), what }); t.updated = Date.now() }
 function dueText(t) {
   if (t.done) return "Done"; if (!t.due) return "No date";
   const d = daysBetween(todayISO(), t.due);
@@ -259,16 +261,18 @@ VIEWS.home = view => {
 function taskRow(t, showProject) {
   const row = el("div", { class: "item" + (t.done ? " done" : "") });
   const tick = el("button", { class: "tick" + (t.done ? " on" : ""), type: "button", "aria-label": t.done ? "Mark not done" : "Mark done", text: t.done ? "✓" : "" });
-  tick.onclick = async () => { t.done = !t.done; t.completed = t.done ? todayISO() : ""; t.updated = Date.now(); await persist(); render() };
+  tick.onclick = async () => { t.done = !t.done; t.completed = t.done ? todayISO() : ""; taskEvent(t, t.done ? "Done" : "Reopened"); await persist(); render() };
   const due = dueText(t); const late = !t.done && t.due && t.due < todayISO();
   row.append(tick, el("div", { class: "grow" }, el("div", { class: "t", text: t.title }), el("div", { class: "m " + (late ? "red-t" : ""), text: (showProject ? projName(t.projectId) + " · " : "") + due })));
-  if (!showProject) row.append(confirmBtn("x-btn", "✕", "Delete?", async () => { await markDeleted(t, "Task deleted"); render() }));
+  const body = row.querySelector(".grow"); body.classList.add("tap"); body.onclick = () => editTask(t);
+  if (!showProject) row.append(confirmBtn("x-btn", "✕", "Delete?", async () => { taskEvent(t, "Deleted"); await markDeleted(t, "Task deleted"); render() }));
   return row;
 }
 VIEWS.projects = view => {
-  setTitle("Projects", D().projects.filter(p => p.status !== "Done").length + " active");
+  const live = D().projects.filter(p => !p.deleted && p.status !== "Archived"), arch = D().projects.filter(p => !p.deleted && p.status === "Archived");
+  setTitle("Projects", live.filter(p => p.status !== "Done").length + " active" + (arch.length ? " · " + arch.length + " archived" : ""));
   const list = el("div", { class: "stack" });
-  D().projects.filter(p => !p.deleted).forEach(p => {
+  live.forEach(p => {
     const open = openTasks().filter(t => t.projectId === p.id).length; const ns = D().samples.filter(s => s.projectId === p.id && !s.deleted).length;
     list.append(el("button", { class: "tapcard stack", type: "button", onclick: () => go("project", { id: p.id }) },
       el("div", { class: "row between" }, el("div", { class: "row grow" }, el("span", { class: "mark", style: "background:" + (p.colour || "#22c55e") + ";height:24px" }), el("span", { class: "big", text: p.name })), el("span", { class: "big green-t", text: (p.progress || 0) + "%" })),
@@ -276,16 +280,28 @@ VIEWS.projects = view => {
       el("div", { class: "small", text: p.nextStep ? "Next: " + p.nextStep : "No next step set" }),
       el("div", { class: "muted small", text: open + (open === 1 ? " open task" : " open tasks") + " · " + ns + (ns === 1 ? " sample" : " samples") + (p.status && p.status !== "Active" ? " · " + p.status : "") })));
   });
-  if (!D().projects.length) list.append(el("p", { class: "empty", text: "No projects yet." }));
+  if (!live.length) list.append(el("p", { class: "empty", text: "No projects yet." }));
   list.append(el("button", { class: "ghost", type: "button", text: "+ Add a project", onclick: () => editProject(null) }));
   view.append(list);
+  if (arch.length) {
+    const open = !!S.showArchived; const box = el("div", { class: "card stack" });
+    box.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: (open ? "▾ " : "▸ ") + "Archived projects (" + arch.length + ")", onclick: () => { S.showArchived = !open; render() } }));
+    if (open) arch.forEach(p => box.append(el("div", { class: "row between" }, el("button", { class: "link", type: "button", style: "color:var(--ink);text-decoration:none;text-align:left;padding:0", text: p.name, onclick: () => go("project", { id: p.id }) }),
+      el("button", { class: "ghost", type: "button", style: "width:auto;padding:8px 14px", text: "Restore", onclick: async () => { p.status = p.prevStatus || "Active"; p.updated = Date.now(); await persist(); toast(p.name + " restored"); render() } }))));
+    view.append(box);
+  }
 };
 VIEWS.project = (view, { id, tab }) => {
   const p = proj(id); if (!p) return back();
   setTitle(p.name, p.summary || "");
   const card = el("div", { class: "card stack" }, el("div", { class: "row between" }, el("div", {}, el("div", { class: "eyebrow", text: "Progress" }), el("div", { style: "font-size:32px;font-weight:800", class: "green-t", text: (p.progress || 0) + "%" })),
-    el("div", { class: "pm" }, el("button", { type: "button", text: "−10", onclick: () => bump(-10) }), el("button", { class: "plus", type: "button", text: "+10", onclick: () => bump(10) }))),
-    el("div", { class: "bar" }, el("i", { style: "width:" + Math.min(100, p.progress || 0) + "%" })));
+    el("div", { class: "pm" }, el("button", { type: "button", text: "−1", onclick: () => bump(-1) }), el("button", { class: "plus", type: "button", text: "+1", onclick: () => bump(1) }))));
+  const pct = card.querySelector(".green-t");
+  const slider = el("input", { type: "range", min: "0", max: "100", step: "1", value: String(p.progress || 0), class: "range", "aria-label": "Progress" });
+  slider.addEventListener("input", () => { pct.textContent = slider.value + "%" });
+  slider.addEventListener("change", async () => { p.progress = +slider.value; p.updated = Date.now(); await persist(); toast("Progress " + p.progress + "%") });
+  card.append(slider, el("p", { class: "fine", text: "Drag to set, or use −1 / +1." }));
+  if (p.status === "Archived") card.prepend(el("div", { class: "badge", style: "justify-self:start;background:#3a2e12;color:var(--amber)", text: "ARCHIVED · hidden from Home, + and Lab" }));
   async function bump(n) { p.progress = Math.max(0, Math.min(100, (p.progress || 0) + n)); p.updated = Date.now(); await persist(); render() }
   const ns = el("input", { type: "text", value: p.nextStep || "", placeholder: "What's the next step?" });
   ns.addEventListener("change", async () => { p.nextStep = ns.value.trim(); p.updated = Date.now(); await persist(); toast("Next step saved") });
@@ -298,7 +314,7 @@ VIEWS.project = (view, { id, tab }) => {
     const chips = el("div", { class: "chips" });
     [["Today", 0], ["Tomorrow", 1], ["1 week", 7], ["2 weeks", 14], ["No date", null]].forEach(([l, n]) => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(n === dueSel), text: l }); c.onclick = () => { dueSel = n; chips.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x === c))) }; chips.append(c) });
     const add = el("button", { class: "primary", type: "button", text: "Add" });
-    add.onclick = async () => { const v = inp.value.trim(); if (!v) return inp.focus(); D().tasks.push({ id: uid("t"), projectId: p.id, title: v, due: dueSel == null ? "" : addDays(todayISO(), dueSel), done: false, completed: "", priority: "Normal", notes: "", updated: Date.now() }); await persist(); render(); toast("Task added") };
+    add.onclick = async () => { const v = inp.value.trim(); if (!v) return inp.focus(); const nt = { id: uid("t"), projectId: p.id, title: v, due: dueSel == null ? "" : addDays(todayISO(), dueSel), done: false, completed: "", priority: "Normal", notes: "", created: Date.now(), history: [] }; taskEvent(nt, "Created" + (nt.due ? ", due " + nt.due : "")); D().tasks.push(nt); await persist(); render(); toast("Task added") };
     view.append(el("div", { class: "card stack" }, el("div", { class: "inline" }, inp, add), chips));
     const list = el("div", { class: "card list" });
     const ts = D().tasks.filter(t => t.projectId === p.id && !t.deleted).sort((a, b) => (a.done - b.done) || (a.due || "9999").localeCompare(b.due || "9999"));
@@ -317,7 +333,35 @@ VIEWS.project = (view, { id, tab }) => {
     view.append(list);
   }
   view.append(el("button", { class: "link", type: "button", text: "Edit project details", onclick: () => editProject(p) }));
+  if (p.status === "Archived") view.append(el("button", { class: "ghost", type: "button", text: "Restore project", onclick: async () => { p.status = p.prevStatus || "Active"; p.updated = Date.now(); await persist(); toast(p.name + " restored"); render() } }));
+  else view.append(confirmBtn("danger", "Archive project", "Tap again to archive", async () => { p.prevStatus = p.status || "Active"; p.status = "Archived"; p.updated = Date.now(); await persist(); toast(p.name + " archived. Restore it from Projects."); go("projects", {}, true) }));
 };
+function editTask(t) {
+  const title = el("input", { type: "text", value: t.title });
+  const due = el("input", { type: "date", value: t.due || "" });
+  const prio = el("select", {}, ...["Low", "Normal", "High"].map(v => el("option", { value: v, selected: (t.priority || "Normal") === v, text: v })));
+  const pj = el("select", {}, ...D().projects.filter(p => !p.deleted).map(p => el("option", { value: p.id, selected: p.id === t.projectId, text: p.name })));
+  const notes = el("textarea", { placeholder: "Notes" }); notes.value = t.notes || "";
+  const done = el("input", { type: "checkbox" }); done.checked = !!t.done;
+  const hist = el("div", { class: "stack" });
+  (t.history || []).slice().sort((a, b) => b.at - a.at).slice(0, 8).forEach(h => hist.append(el("div", { class: "fine", text: fmtWhen(h.at) + " · " + h.what })));
+  const body = el("div", { class: "stack" }, el("label", { text: "Task" }), title, el("label", { text: "Due date" }), due,
+    el("label", { text: "Priority" }), prio, el("label", { text: "Project" }), pj, el("label", { text: "Notes" }), notes,
+    el("label", { class: "check" }, done, " Done"),
+    el("button", { class: "primary", type: "button", text: "Save", onclick: async () => {
+      const v = title.value.trim(); if (!v) return title.focus(); const ch = [];
+      if (v !== t.title) ch.push("renamed"); if (due.value !== (t.due || "")) ch.push(due.value ? "due " + due.value : "due date removed");
+      if (prio.value !== (t.priority || "Normal")) ch.push("priority " + prio.value); if (pj.value !== t.projectId) ch.push("moved to " + projName(pj.value));
+      if (notes.value.trim() !== (t.notes || "")) ch.push("notes edited");
+      Object.assign(t, { title: v, due: due.value, priority: prio.value, projectId: pj.value, notes: notes.value.trim() });
+      if (done.checked !== !!t.done) { t.done = done.checked; t.completed = t.done ? todayISO() : ""; ch.push(t.done ? "marked done" : "reopened") }
+      if (ch.length) taskEvent(t, "Edited: " + ch.join(", "));
+      await persist(); closeSheet(); render(); toast("Task saved") } }),
+    confirmBtn("danger", "Delete task", "Tap again to delete", async () => { taskEvent(t, "Deleted"); await markDeleted(t, "Task deleted"); closeSheet(); render() }),
+    el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
+  if (hist.childNodes.length) body.append(el("div", { class: "eyebrow", text: "History" }), hist);
+  sheet("Edit task", body);
+}
 function logCard(l) {
   const c = el("div", { class: "card stack" }, el("div", { class: "row between" }, el("span", { class: "big", text: l.title }), l.sampleId ? el("button", { class: "badge", type: "button", style: "border:0", text: l.sampleId, onclick: () => { const s = sampleBy(l.sampleId); if (s) go("sample", { id: s.id }) } }) : null),
     el("div", { class: "muted small", text: fmtWhen(l.when) + " · " + projName(l.projectId) }));
@@ -364,7 +408,7 @@ VIEWS.capture = (view, params) => {
   const setMode = m => { mode = m; S.capMode = m; sampleBox.hidden = m !== "sample"; modeSeg.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.m === m))) };
   [["sample", "Sample"], ["none", "Not a sample"]].forEach(([m, l]) => modeSeg.append(el("button", { type: "button", "data-m": m, text: l, onclick: () => setMode(m) })));
   sid.addEventListener("input", () => manual = true);
-  D().projects.filter(p => !p.deleted && p.status !== "Done").forEach(p => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(p.id === st.projectId), text: p.name }); c.onclick = () => { st.projectId = p.id; chips.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x === c))); refreshId(); upd() }; chips.append(c) });
+  D().projects.filter(p => !p.deleted && p.status !== "Done" && p.status !== "Archived").forEach(p => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(p.id === st.projectId), text: p.name }); c.onclick = () => { st.projectId = p.id; chips.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x === c))); refreshId(); upd() }; chips.append(c) });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto" }); auto.onclick = () => { manual = false; refreshId() };
   const title = el("input", { type: "text", placeholder: "Title, e.g. Batch 3 after curing" });
   const note = el("textarea", { placeholder: "Notes" });
@@ -388,7 +432,7 @@ VIEWS.capture = (view, params) => {
 VIEWS.lab = view => {
   setTitle("Lab mode", "Pick a protocol to log samples against");
   const list = el("div", { class: "stack" });
-  D().protocols.filter(p => !p.deleted).forEach(p => list.append(el("button", { class: "tapcard stack", type: "button", onclick: () => go("run", { id: p.id }) },
+  D().protocols.filter(p => !p.deleted && !isArchived(p.projectId)).forEach(p => list.append(el("button", { class: "tapcard stack", type: "button", onclick: () => go("run", { id: p.id }) },
     el("div", { class: "row" }, el("span", { class: "mark", style: "background:var(--green);height:22px" }), el("span", { class: "big", text: p.name })),
     el("div", { class: "green-t small", text: projName(p.projectId) + " · " + p.fields.length + " fields" }), p.description ? el("div", { class: "muted small", text: p.description }) : null)));
   if (!D().protocols.length) list.append(el("div", { class: "card stack" }, el("p", { class: "muted", text: "No protocols yet. Import your Excel files in Settings, or send Claude a protocol document and paste what it gives you into Settings → Add a protocol." })));
@@ -484,7 +528,7 @@ function editProject(p) {
   const isNew = !p; p = p || { id: uid("j"), name: "", summary: "", status: "Active", progress: 0, nextStep: "", folder: "", keywords: "", colour: "#22c55e", prefix: "" };
   const f = {}; const body = el("div", { class: "stack" });
   [["name", "Name"], ["summary", "Summary"], ["prefix", "Sample ID prefix (e.g. PEL)"], ["folder", "OneDrive folder for photos (e.g. /LabDash/My project)"], ["keywords", "Keywords"], ["colour", "Colour (hex)"]].forEach(([k, l]) => { f[k] = el("input", { type: "text", value: p[k] || "" }); body.append(el("label", { text: l }), f[k]) });
-  const status = el("select", {}, ...["Active", "Paused", "Writing up", "Done"].map(s => el("option", { value: s, selected: p.status === s, text: s }))); body.append(el("label", { text: "Status" }), status);
+  const status = el("select", {}, ...["Active", "Paused", "Writing up", "Done", "Archived"].map(s => el("option", { value: s, selected: p.status === s, text: s }))); body.append(el("label", { text: "Status" }), status);
   body.append(el("button", { class: "primary", type: "button", text: isNew ? "Add project" : "Save", onclick: async () => { if (!f.name.value.trim()) return f.name.focus(); for (const k in f) p[k] = f[k].value.trim(); p.prefix = p.prefix.toUpperCase(); p.status = status.value; p.updated = Date.now(); if (isNew) D().projects.push(p); await persist(); closeSheet(); render() } }),
     el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
   sheet(isNew ? "New project" : "Edit project", body);
