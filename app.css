@@ -135,3 +135,8 @@ textarea{min-height:110px;resize:vertical}
 .danger.armed{background:#3a1717}
 .tap{cursor:pointer}
 .range{width:100%;accent-color:var(--green);height:28px}
+button.stat{text-align:left;color:inherit;font:inherit;cursor:pointer}
+button.stat:active,.tapcard2:active{filter:brightness(1.25)}
+.tapcard2{display:grid;width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer}
+.item.tapcard{width:100%;text-align:left;color:inherit;font:inherit;border-radius:0}
+.item.tapcard + .item.tapcard{border-top:1px solid #1c2420!important}

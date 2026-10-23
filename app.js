@@ -233,13 +233,13 @@ VIEWS.home = view => {
   const realSamples = D().samples.filter(s => !s.deleted);
   const sWeek = realSamples.filter(s => s.created >= wk).length;
   view.append(el("div", { class: "stats" },
-    el("div", { class: "stat" }, el("b", { text: open.length }), el("span", { text: "open tasks" })),
-    el("div", { class: "stat" }, el("b", { class: due7.length ? "amber-t" : "", text: due7.length }), el("span", { text: "due in 7 days" })),
-    el("div", { class: "stat" }, el("b", { class: "green-t", text: sWeek }), el("span", { text: "samples this week" }))));
+    el("button", { class: "stat", type: "button", onclick: () => go("list", { kind: "open" }) }, el("b", { text: open.length }), el("span", { text: "open tasks" })),
+    el("button", { class: "stat", type: "button", onclick: () => go("list", { kind: "due7" }) }, el("b", { class: due7.length ? "amber-t" : "", text: due7.length }), el("span", { text: "due in 7 days" })),
+    el("button", { class: "stat", type: "button", onclick: () => go("list", { kind: "samplesWeek" }) }, el("b", { class: "green-t", text: sWeek }), el("span", { text: "samples this week" }))));
   const logW = D().log.filter(l => !l.deleted && l.when >= wk).length;
   const doneW = D().tasks.filter(t => t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk).length;
   const overdue = open.filter(t => t.due && t.due < t0).length;
-  view.append(el("div", { class: "card green stack" }, el("div", { class: "eyebrow", text: "This week" }),
+  view.append(el("button", { class: "card green stack tapcard2", type: "button", onclick: () => go("list", { kind: "week" }) }, el("div", { class: "eyebrow", text: "This week ›" }),
     el("div", { class: "big", text: logW + " log entries · " + sWeek + " samples made" }),
     el("div", { class: "muted small", text: doneW + " tasks done · " + overdue + " overdue" })));
   const dueCard = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Due soon" }));
@@ -251,12 +251,54 @@ VIEWS.home = view => {
   const items = [...D().log.filter(l => !l.deleted).map(l => ({ ts: l.when, kind: "log", l })), ...realSamples.map(s => ({ ts: s.created, kind: "s", s }))].sort((a, b) => b.ts - a.ts).slice(0, 6);
   const rl = el("div", { class: "list" });
   items.forEach(i => {
-    if (i.kind === "s") rl.append(el("button", { class: "item tapcard", style: "border:0;padding:10px 0;background:none", onclick: () => go("sample", { id: i.s.id }) }, el("span", { class: "mark", style: "background:" + projColour(i.s.projectId) }), el("div", { class: "grow" }, el("div", { class: "t green-t", text: i.s.sampleId }), el("div", { class: "m", text: ((prot(i.s.protocolId) || {}).name || i.s.protocolName || "Photo log") + " · " + fmtWhen(i.s.created) }))));
-    else rl.append(el("div", { class: "item" }, el("span", { class: "mark", style: "background:" + projColour(i.l.projectId) }), el("div", { class: "grow" }, el("div", { class: "t", text: i.l.title }), el("div", { class: "m", text: projName(i.l.projectId) + " · " + fmtWhen(i.l.when) + (i.l.photos && i.l.photos.length ? " · 📷 " + i.l.photos.length : "") }))));
+    if (i.kind === "s") rl.append(sampleRow(i.s));
+    else rl.append(entryRow(i.l));
   });
   if (!items.length) rl.append(el("p", { class: "empty", text: "No entries yet. Tap + to log something." }));
-  recent.append(rl); view.append(recent);
+  recent.append(rl);
+  if (items.length) recent.append(el("button", { class: "link", type: "button", text: "See all activity", onclick: () => go("list", { kind: "activity" }) }));
+  view.append(recent);
   if (!D().projects.length) view.append(el("div", { class: "card stack" }, el("div", { class: "big", text: "Bring your data in" }), el("p", { class: "muted small", text: "Import your LabDash Excel files from Settings, or add a project yourself." }), el("button", { class: "ghost", type: "button", onclick: () => go("settings", {}, true), text: "Go to Settings" })));
+};
+function sampleRow(s) {
+  return el("button", { class: "item tapcard", style: "border:0;padding:10px 0;background:none", onclick: () => go("sample", { id: s.id }) }, el("span", { class: "mark", style: "background:" + projColour(s.projectId) }), el("div", { class: "grow" }, el("div", { class: "t green-t", text: s.sampleId }), el("div", { class: "m", text: ((prot(s.protocolId) || {}).name || s.protocolName || "Photo log") + " · " + projName(s.projectId) + " · " + fmtWhen(s.created) })));
+}
+function entryRow(l) {
+  return el("button", { class: "item tapcard", style: "border:0;padding:10px 0;background:none", onclick: () => go("entry", { id: l.id }) }, el("span", { class: "mark", style: "background:" + projColour(l.projectId) }), el("div", { class: "grow" }, el("div", { class: "t", text: l.title }), el("div", { class: "m", text: projName(l.projectId) + " · " + fmtWhen(l.when) + (l.photos && l.photos.length ? " · 📷 " + l.photos.length : "") })));
+}
+VIEWS.entry = (view, { id }) => {
+  const l = D().log.find(x => x.id === id && !x.deleted); if (!l) return back();
+  setTitle(l.title, projName(l.projectId));
+  view.append(logCard(l), el("button", { class: "ghost", type: "button", text: "Open project " + projName(l.projectId), onclick: () => go("project", { id: l.projectId, tab: "log" }) }));
+};
+VIEWS.list = (view, { kind }) => {
+  const wk = weekStart(), t0 = todayISO(); const box = el("div", { class: "card list" });
+  const byDue = (a, b) => (a.due || "9999").localeCompare(b.due || "9999");
+  const empty = t => box.append(el("p", { class: "empty", text: t }));
+  if (kind === "open" || kind === "due7") {
+    let ts = openTasks().sort(byDue); if (kind === "due7") ts = ts.filter(t => t.due && daysBetween(t0, t.due) <= 7);
+    setTitle(kind === "open" ? "Open tasks" : "Due in 7 days", ts.length + (ts.length === 1 ? " task" : " tasks") + " · tap a task to edit");
+    ts.forEach(t => box.append(taskRow(t, true))); if (!ts.length) empty("Nothing here.");
+    view.append(box);
+  } else if (kind === "samplesWeek") {
+    const ss = D().samples.filter(s => !s.deleted && s.created >= wk).sort((a, b) => b.created - a.created);
+    setTitle("Samples this week", ss.length + " since Monday");
+    ss.forEach(s => box.append(sampleRow(s))); if (!ss.length) empty("No samples yet this week.");
+    view.append(box);
+  } else if (kind === "week") {
+    setTitle("This week", "Since Monday");
+    const logs = D().log.filter(l => !l.deleted && l.when >= wk).sort((a, b) => b.when - a.when);
+    const ss = D().samples.filter(s => !s.deleted && s.created >= wk).sort((a, b) => b.created - a.created);
+    const done = D().tasks.filter(t => !t.deleted && t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk);
+    const late = openTasks().filter(t => t.due && t.due < t0).sort(byDue);
+    [["Log entries", logs, entryRow], ["Samples made", ss, sampleRow], ["Tasks done", done, t => taskRow(t, true)], ["Overdue", late, t => taskRow(t, true)]].forEach(([h, arr, fn]) => {
+      const c = el("div", { class: "card list" }, el("div", { class: "eyebrow", text: h + " (" + arr.length + ")" })); arr.forEach(x => c.append(fn(x))); if (!arr.length) c.append(el("p", { class: "empty", text: "None." })); view.append(c) });
+  } else {
+    setTitle("All activity", "Log entries and samples, newest first");
+    const items = [...D().log.filter(l => !l.deleted).map(l => ({ ts: l.when, n: entryRow(l) })), ...D().samples.filter(s => !s.deleted).map(s => ({ ts: s.created, n: sampleRow(s) }))].sort((a, b) => b.ts - a.ts);
+    items.slice(0, 200).forEach(i => box.append(i.n)); if (!items.length) empty("No activity yet.");
+    view.append(box);
+  }
 };
 function taskRow(t, showProject) {
   const row = el("div", { class: "item" + (t.done ? " done" : "") });
