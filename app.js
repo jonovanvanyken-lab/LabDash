@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -149,6 +149,9 @@ const proj = id => D().projects.find(p => p.id === id);
 const projName = id => (proj(id) || {}).name || "No project";
 const projColour = id => (proj(id) || {}).colour || "#22c55e";
 const prot = id => D().protocols.find(p => p.id === id);
+const liveFields = p => (p.fields || []).filter(f => !f.off);
+/* keep "removed" and "required" choices when a protocol is re-imported */
+function keepFieldChoices(oldF, newF) { const by = Object.fromEntries((oldF || []).map(f => [f.key, f])); newF.forEach(f => { const o = by[f.key]; if (o && o.off) f.off = true; if (o && o.userReq != null) { f.userReq = o.userReq; f.required = o.userReq } }); return newF }
 const sampleBy = sid => D().samples.find(s => s.sampleId === sid && !s.deleted);
 /* a button that asks for a second tap before it acts */
 function confirmBtn(cls, label, confirmLabel, act) {
@@ -471,7 +474,7 @@ function fieldInput(f, vals) {
 /* ---------- edit a sample ---------- */
 function editSample(s) {
   const pr = prot(s.protocolId);
-  const fields = pr ? pr.fields.slice().sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, type: typeof s.values[k] === "number" ? "Number" : "Text", unit: "" }));
+  const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, type: typeof s.values[k] === "number" ? "Number" : "Text", unit: "" }));
   const vals = Object.assign({}, s.values || {});
   const sid = el("input", { type: "text", value: s.sampleId, autocapitalize: "characters" });
   const loc = el("select", {}, el("option", { value: "", text: "Not set" }), ...D().locations.map(L => el("option", { value: L.name, selected: s.location === L.name, text: L.name })));
@@ -603,7 +606,8 @@ function showWeekly() {
 /* ---------- results & charts per protocol ---------- */
 const PAL = ["#22c55e", "#60a5fa", "#f5b642", "#f472b6", "#a78bfa", "#2dd4bf", "#fb923c", "#e5e7eb", "#f87171", "#a3e635"];
 function protoVars(pr) {
-  const fields = pr.fields.slice().sort((a, b) => a.step - b.step); const v = [];
+  const used = new Set(); D().samples.forEach(s => { if (!s.deleted && s.protocolId === pr.id) Object.keys(s.values || {}).forEach(k => used.add(k)) });
+  const fields = pr.fields.filter(f => !f.off || used.has(f.key)).sort((a, b) => a.step - b.step); const v = [];
   fields.forEach(f => { if (f.type === "Number") v.push({ key: f.key, label: f.label + (f.unit ? " (" + f.unit + ")" : ""), kind: "num" }); else v.push({ key: f.key, label: f.label, kind: "cat", order: f.options || [] }) });
   const lbl = fields.map(f => f.label.trim().toLowerCase());
   if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
@@ -684,7 +688,7 @@ VIEWS.sample = (view, { id }) => {
   D().locations.forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(s.location === L.name), text: L.name }); c.onclick = async () => { s.location = L.name; s.updated = Date.now(); await persist(); toast("Moved to " + L.name); render() }; loc.append(c) });
   view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }), loc));
   const vals = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Measurements" }));
-  const fields = pr ? pr.fields.slice().sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, unit: "" }));
+  const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, unit: "" }));
   let any = false;
   fields.forEach(f => { const v = (s.values || {})[f.key]; if (v === undefined || v === "") return; any = true; vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), el("span", { text: v + (f.unit ? " " + f.unit : "") }))) });
   derivedFor(fields, s.values || {}).forEach(([k, v]) => { any = true; vals.append(el("div", { class: "kv" }, el("span", { text: k }), el("span", { class: "green-t", text: v }))) });
@@ -739,20 +743,20 @@ VIEWS.lab = view => {
   const list = el("div", { class: "stack" });
   D().protocols.filter(p => !p.deleted && !isArchived(p.projectId)).forEach(p => { const n = D().samples.filter(x => !x.deleted && x.protocolId === p.id).length; list.append(el("div", { class: "tapcard stack" },
     el("div", { class: "row" }, el("span", { class: "mark", style: "background:var(--green);height:22px" }), el("span", { class: "big", text: p.name })),
-    el("div", { class: "green-t small", text: projName(p.projectId) + " · " + p.fields.length + " fields · " + n + (n === 1 ? " sample" : " samples") }), p.description ? el("div", { class: "muted small", text: p.description }) : null,
+    el("div", { class: "green-t small", text: projName(p.projectId) + " · " + liveFields(p).length + " fields · " + n + (n === 1 ? " sample" : " samples") }), p.description ? el("div", { class: "muted small", text: p.description }) : null,
     el("div", { class: "two" }, el("button", { class: "primary slim", type: "button", text: "Log samples", onclick: () => go("run", { id: p.id }) }), el("button", { class: "ghost slim", type: "button", text: "📈 Results", onclick: () => go("results", { id: p.id }) })))) });
   if (!D().protocols.length) list.append(el("div", { class: "card stack" }, el("p", { class: "muted", text: "No protocols yet. Import your Excel files in Settings, or send Claude a protocol document and paste what it gives you into Settings → Add a protocol." })));
   view.append(list);
 };
 VIEWS.run = (view, { id }) => {
   const p = prot(id); if (!p) return back();
-  const fields = p.fields.slice().sort((a, b) => a.step - b.step);
+  const fields = liveFields(p).sort((a, b) => a.step - b.step);
   S.runKeep = S.runKeep && S.runKeep.protocol === p.id ? S.runKeep : { protocol: p.id, values: {}, count: 0, location: "" };
   const K = S.runKeep; const vals = {}; fields.forEach(f => { if (f.keep && K.values[f.key] != null) vals[f.key] = K.values[f.key] });
   setTitle(p.name, projName(p.projectId) + " · " + K.count + " saved this session");
   const top = el("div", { class: "stack" });
   if (p.docLink) top.append(el("a", { class: "link", href: p.docLink, target: "_blank", rel: "noopener", text: "Open protocol document ↗" }));
-  top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }));
+  top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }), el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "✏️ Remove or restore fields ›", onclick: () => go("protofields", { id: p.id }) }));
   const sid = el("input", { type: "text", value: nextSampleId(p.projectId), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId) });
   const loc = el("div", { class: "chips" });
@@ -792,6 +796,25 @@ VIEWS.run = (view, { id }) => {
   };
   view.append(el("div", { class: "sticky-save" }, save));
 };
+VIEWS.protofields = (view, { id }) => {
+  const p = prot(id); if (!p || p.deleted) return back();
+  setTitle("Fields · " + p.name, liveFields(p).length + " in use · " + (p.fields.length - liveFields(p).length) + " removed");
+  view.append(el("p", { class: "muted small", text: "Remove anything you don't need. Removed fields disappear from the Lab form but nothing is deleted: samples you've already logged keep their values, and you can restore a field at any time. Re-importing the protocol keeps these choices." }));
+  const save = async () => { p.updated = Date.now(); await persist(); render() };
+  const fs = p.fields.slice().sort((a, b) => a.step - b.step); let sec = null; const card = el("div", { class: "card stack" });
+  fs.forEach(f => {
+    if ((f.section || "") !== sec) { sec = f.section || ""; if (sec) card.append(el("div", { class: "eyebrow", text: sec })) }
+    const meta = [f.type, f.unit, f.keep ? "kept between samples" : ""].filter(Boolean).join(" · ");
+    const req = el("button", { class: "chip", type: "button", "aria-pressed": String(!!f.required), text: f.required ? "Required" : "Optional", onclick: () => { f.required = !f.required; f.userReq = f.required; save() } });
+    const tog = el("button", { class: f.off ? "ghost" : "link", type: "button", text: f.off ? "Restore" : "Remove", onclick: () => { f.off = !f.off; save() } });
+    card.append(el("div", { class: "row between", style: f.off ? "opacity:.5" : "" },
+      el("div", { class: "grow" }, el("div", { class: "small", style: f.off ? "text-decoration:line-through" : "font-weight:600", text: f.label }), el("div", { class: "fine", text: meta })),
+      f.off ? null : req, tog));
+  });
+  if (!fs.length) card.append(el("p", { class: "empty", text: "This protocol has no fields." }));
+  view.append(card);
+  if (fs.some(f => f.off)) view.append(el("button", { class: "ghost", type: "button", text: "Restore all fields", onclick: () => { fs.forEach(f => f.off = false); save() } }));
+};
 VIEWS.settings = view => {
   setTitle("Settings", "Sync, import and protocols");
   const c = syncCfg();
@@ -817,7 +840,7 @@ VIEWS.settings = view => {
   imp.append(fin, ih); view.append(imp);
   // protocols
   const pc = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Protocols" }));
-  D().protocols.filter(p => !p.deleted).forEach(p => pc.append(el("div", { class: "row between" }, el("span", { class: "small", text: p.name + " (" + p.fields.length + " fields)" }), el("button", { class: "link", type: "button", text: "Remove", onclick: async e => { if (e.target.dataset.c !== "1") { e.target.dataset.c = "1"; e.target.textContent = "Tap again"; return } p.deleted = true; p.updated = Date.now(); await persist(); render() } }))));
+  D().protocols.filter(p => !p.deleted).forEach(p => pc.append(el("div", { class: "row between" }, el("span", { class: "small grow", text: p.name + " (" + liveFields(p).length + " fields" + (p.fields.length > liveFields(p).length ? ", " + (p.fields.length - liveFields(p).length) + " removed" : "") + ")" }), el("button", { class: "link", type: "button", text: "Edit fields", onclick: () => go("protofields", { id: p.id }) }), el("button", { class: "link", type: "button", text: "Remove", onclick: async e => { if (e.target.dataset.c !== "1") { e.target.dataset.c = "1"; e.target.textContent = "Tap again"; return } p.deleted = true; p.updated = Date.now(); await persist(); render() } }))));
   pc.append(el("button", { class: "ghost", type: "button", text: "+ Add a protocol from Claude", onclick: addProtocolSheet }));
   view.append(pc);
   // reset a project's samples
@@ -858,7 +881,7 @@ function addProtocolSheet() {
   const ta = el("textarea", { placeholder: "Paste the protocol text from Claude here", style: "min-height:200px;font-family:ui-monospace,monospace;font-size:13px" }); const h = el("p", { class: "hint" });
   const body = el("div", { class: "stack" }, el("p", { class: "muted small", text: "Send Claude your protocol document and ask for a LabDash protocol. Paste the result here." }), ta,
     el("button", { class: "primary", type: "button", text: "Add protocol", onclick: async () => {
-      try { const o = JSON.parse(ta.value); const pr = protocolFromJson(o); const ex = D().protocols.find(x => x.name === pr.name && !x.deleted); if (ex) { pr.id = ex.id; Object.assign(ex, pr) } else D().protocols.push(pr); await persist(); closeSheet(); toast("Protocol added"); render() }
+      try { const o = JSON.parse(ta.value); const pr = protocolFromJson(o); const ex = D().protocols.find(x => x.name === pr.name && !x.deleted); if (ex) { pr.id = ex.id; keepFieldChoices(ex.fields, pr.fields); Object.assign(ex, pr) } else D().protocols.push(pr); await persist(); closeSheet(); toast("Protocol added"); render() }
       catch (e) { h.className = "hint err"; h.textContent = "That doesn't look like a LabDash protocol: " + e.message } } }), h, el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
   sheet("Add a protocol", body);
 }
@@ -888,9 +911,9 @@ async function importExcel(files) {
   for (const wb of books) for (const r of rows(wb, "Tasks") || []) { if (!r.Task || /^example/i.test(r.Task)) continue; const p = byName(r.Project); const ex = D().tasks.find(t => t.title === r.Task && t.projectId === (p && p.id));
     const t = ex || { id: uid("t") }; Object.assign(t, { projectId: p ? p.id : "", title: String(r.Task), due: xDate(r.Due), done: truthy(r.Done), completed: xDate(r.Completed) || (truthy(r.Done) ? todayISO() : ""), priority: r.Priority || "Normal", notes: r.Notes || "", updated: Date.now() }); if (!ex) D().tasks.push(t); n.tasks++ }
   for (const wb of books) { const pr = rows(wb, "Protocols"), pf = rows(wb, "ProtocolFields"); if (!pr || !pf) continue;
-    for (const r of pr) { if (!r.Protocol) continue; const p = byName(r.Project); let x = D().protocols.find(q => q.name === r.Protocol && !q.deleted); if (!x) { x = { id: uid("r") }; D().protocols.push(x) }
+    for (const r of pr) { if (!r.Protocol) continue; const p = byName(r.Project); let x = D().protocols.find(q => q.name === r.Protocol && !q.deleted); if (!x) { x = { id: uid("r") }; D().protocols.push(x) } const oldF = x.fields;
       Object.assign(x, { name: String(r.Protocol), projectId: p ? p.id : "", description: r.Description || "", docLink: r.DocLink || "", updated: Date.now(),
-        fields: pf.filter(f => f.Protocol === r.Protocol && f.Field).map(f => ({ key: slug(f.Field), step: Number(f.Step) || 0, section: f.Section || "", label: String(f.Field), type: ["Number", "Text", "Choice", "Check"].includes(f.Type) ? f.Type : "Text", unit: f.Unit || "", options: String(f.Options || "").split(";").map(s => s.trim()).filter(Boolean), required: truthy(f.Required), keep: truthy(f.Keep), hint: f.Hint || "" })) }); n.protocols++ } }
+        fields: pf.filter(f => f.Protocol === r.Protocol && f.Field).map(f => ({ key: slug(f.Field), step: Number(f.Step) || 0, section: f.Section || "", label: String(f.Field), type: ["Number", "Text", "Choice", "Check"].includes(f.Type) ? f.Type : "Text", unit: f.Unit || "", options: String(f.Options || "").split(";").map(s => s.trim()).filter(Boolean), required: truthy(f.Required), keep: truthy(f.Keep), hint: f.Hint || "" })) }); keepFieldChoices(oldF, x.fields); n.protocols++ } }
   for (const wb of books) { const sr = rows(wb, "Samples"); if (!sr) continue; const mr = rows(wb, "Measurements") || [];
     for (const r of sr) { const sid = String(r.SampleID || "").trim(); if (!sid || /^EX-/i.test(sid)) continue; const p = byName(r.Project); const pr = D().protocols.find(q => q.name === r.Protocol && !q.deleted);
       let s = sampleBy(sid); if (!s) { s = { id: uid("s"), values: {} }; D().samples.push(s) }

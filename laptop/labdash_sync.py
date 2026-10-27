@@ -208,7 +208,9 @@ def write_workbook(docs, path):
           [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), when(s.get("created")),
             s.get("location", ""), s.get("status", ""), s.get("notes", "")] for s in samples])
     for pr in protos.values():
-        fields = sorted(pr.get("fields", []), key=lambda f: f.get("step", 0))
+        used = {k for s in samples if s.get("protocolId") == pr["id"] for k in (s.get("values") or {})}
+        # fields removed in the app are left out unless a sample already holds a value for them
+        fields = sorted([f for f in pr.get("fields", []) if not f.get("off") or f["key"] in used], key=lambda f: f.get("step", 0))
         rows = []
         for s in samples:
             if s.get("protocolId") != pr["id"]:
