@@ -117,6 +117,11 @@ def when(ms):
     return dt.datetime.fromtimestamp(ms / 1000) if isinstance(ms, (int, float)) and ms else None
 
 
+def day(ms):
+    w = when(ms)
+    return w.date() if w else None
+
+
 def day(iso):
     try:
         return dt.date.fromisoformat(iso) if iso else None
@@ -170,6 +175,12 @@ def write_workbook(docs, path):
             c.font, c.fill = head_font, head_fill
         for r in rows:
             ws.append(r)
+        for row in ws.iter_rows(min_row=2):
+            for c in row:
+                if isinstance(c.value, dt.datetime):
+                    c.number_format = "dd/mm/yyyy hh:mm"
+                elif isinstance(c.value, dt.date):
+                    c.number_format = "dd/mm/yyyy"
         ws.freeze_panes = "A2"
         for i, h in enumerate(header, 1):
             width = max([len(str(h))] + [len(str(r[i - 1])) for r in rows[:300] if i - 1 < len(r) and r[i - 1] is not None])
@@ -204,8 +215,8 @@ def write_workbook(docs, path):
           [[when(l.get("when")), pname(l.get("projectId")), l.get("title", ""), l.get("note", ""), l.get("sampleId", ""), len(l.get("photos") or [])]
            for l in sorted(docs.get("log", []), key=lambda l: -(l.get("when") or 0)) if not l.get("deleted")])
     samples = sorted([s for s in docs.get("samples", []) if not s.get("deleted")], key=lambda s: s.get("created") or 0)
-    sheet("Samples", ["SampleID", "Project", "Protocol", "Created", "Location", "Status", "Notes"],
-          [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), when(s.get("created")),
+    sheet("Samples", ["SampleID", "Project", "Protocol", "Date", "Location", "Status", "Notes"],
+          [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), day(s.get("created")),
             s.get("location", ""), s.get("status", ""), s.get("notes", "")] for s in samples])
     for pr in protos.values():
         used = {k for s in samples if s.get("protocolId") == pr["id"] for k in (s.get("values") or {})}
@@ -217,8 +228,8 @@ def write_workbook(docs, path):
                 continue
             v = s.get("values") or {}
             dens, stren = derived(fields, v)
-            rows.append([s["sampleId"], when(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
-        header = ["SampleID", "Created", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
+            rows.append([s["sampleId"], day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
+        header = ["SampleID", "Date", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
         sheet(pr["name"], header, rows)
     sheet("Links", ["Project", "Name", "Link", "Added"],
           [[p["name"], k.get("title", ""), k.get("url", ""), when(k.get("added"))] for p in projects.values() for k in p.get("links") or []])

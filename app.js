@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.9";
+const APP_VERSION = "1.10";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -143,6 +143,17 @@ const todayISO = () => { const d = new Date(); return d.getFullYear() + "-" + pa
 const addDays = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) };
 const daysBetween = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
 const fmtDay = iso => iso ? new Date(iso + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : "";
+/* dd/mm/yyyy dates */
+const pad2 = n => String(n).padStart(2, "0");
+const dmy = ts => { const d = new Date(ts); return pad2(d.getDate()) + "/" + pad2(d.getMonth() + 1) + "/" + d.getFullYear() };
+function parseDmy(str) { const m = String(str || "").trim().match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/); if (!m) return null; const d = new Date(+m[3], +m[2] - 1, +m[1]); return d.getDate() === +m[1] && d.getMonth() === +m[2] - 1 ? d : null }
+/* the chosen day, keeping the time of day from `timeFrom` (now by default) */
+function onDay(d, timeFrom) { const t = new Date(timeFrom || Date.now()); d.setHours(t.getHours(), t.getMinutes(), t.getSeconds(), 0); return d.getTime() }
+function dateInput(value) {
+  const inp = el("input", { type: "text", inputmode: "numeric", placeholder: "dd/mm/yyyy", value, maxlength: "10", autocomplete: "off" });
+  inp.addEventListener("input", e => { if (e.inputType && e.inputType.startsWith("delete")) return; const dg = inp.value.replace(/\D/g, "").slice(0, 8); inp.value = dg.length > 4 ? dg.slice(0, 2) + "/" + dg.slice(2, 4) + "/" + dg.slice(4) : dg.length > 2 ? dg.slice(0, 2) + "/" + dg.slice(2) : dg });
+  return inp;
+}
 const fmtWhen = ts => new Date(ts).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const weekStart = () => { const d = new Date(); const wd = (d.getDay() + 6) % 7; d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - wd); return d.getTime() };
 const proj = id => D().projects.find(p => p.id === id);
@@ -480,17 +491,19 @@ function editSample(s) {
   const loc = el("select", {}, el("option", { value: "", text: "Not set" }), ...D().locations.map(L => el("option", { value: L.name, selected: s.location === L.name, text: L.name })));
   const status = el("input", { type: "text", value: s.status || "" });
   const notes = el("textarea", {}); notes.value = s.notes || "";
-  const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Stored at" }), loc, el("label", { text: "Status" }), status);
+  const dt = dateInput(dmy(s.created));
+  const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), loc, el("label", { text: "Status" }), status);
   if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
     fields.forEach(f => body.append(el("label", { text: f.label + (f.unit ? " (" + f.unit + ")" : "") }), fieldInput(f, vals))) }
   body.append(el("label", { text: "Notes" }), notes,
     el("button", { class: "primary", type: "button", text: "Save changes", onclick: async () => {
       const nid = sid.value.trim(); if (!nid) return toast("The sample needs an ID", true);
       if (nid !== s.sampleId && sampleBy(nid)) return toast(nid + " already exists", true);
+      const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
       for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
       const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v });
       if (nid !== s.sampleId) D().log.forEach(l => { if (l.sampleId === s.sampleId) { l.sampleId = nid; l.updated = Date.now() } });
-      Object.assign(s, { sampleId: nid, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
+      Object.assign(s, { sampleId: nid, created: dmy(day.getTime()) === dmy(s.created) ? s.created : onDay(day, s.created), logged: s.logged || s.created, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
       await persist(); closeSheet(); render(); toast("Saved " + nid) } }),
     el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
   sheet("Edit " + s.sampleId, body);
@@ -701,7 +714,7 @@ VIEWS.sample = (view, { id }) => {
   pc.append(el("button", { class: "ghost", type: "button", text: "+ Add photo or note to " + s.sampleId, onclick: () => go("capture", { projectId: s.projectId, sampleId: s.sampleId }) }));
   view.append(pc);
   if (s.notes) view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Notes" }), el("p", { text: s.notes })));
-  view.append(el("p", { class: "fine", text: "Created " + fmtWhen(s.created) }));
+  view.append(el("p", { class: "fine", text: "Date " + dmy(s.created) + (s.logged && dmy(s.logged) !== dmy(s.created) ? " · logged in the app " + fmtWhen(s.logged) : "") }));
   view.append(confirmBtn("danger", "Delete sample " + s.sampleId, "Tap again to delete " + s.sampleId, async () => { await markDeleted(s, s.sampleId + " deleted"); back() }));
   view.append(el("p", { class: "fine", text: "Deleting removes the sample and its measurements. Photo entries for it stay in the project log." }));
 };
@@ -761,7 +774,9 @@ VIEWS.run = (view, { id }) => {
   const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId) });
   const loc = el("div", { class: "chips" });
   D().locations.forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(K.location === L.name), text: L.name }); c.onclick = () => { K.location = K.location === L.name ? "" : L.name; loc.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x.textContent === K.location))) }; loc.append(c) });
-  top.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "STORED AT" }), loc);
+  const dt = dateInput(K.date || dmy(Date.now())); dt.addEventListener("change", () => { K.date = dt.value.trim() === dmy(Date.now()) ? "" : dt.value.trim() });
+  const today = el("button", { class: "ghost", type: "button", text: "Today", onclick: () => { dt.value = dmy(Date.now()); K.date = "" } });
+  top.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), loc);
   view.append(top);
   const form = el("div", { class: "card" }); const derived = el("div", { class: "derived" });
   const recalc = () => { derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
@@ -784,14 +799,16 @@ VIEWS.run = (view, { id }) => {
   const save = el("button", { class: "primary", type: "button" }); const label = () => save.textContent = "Save " + (sid.value.trim() || "sample"); label(); sid.addEventListener("input", label);
   save.onclick = async () => {
     const s = sid.value.trim(); if (!s) return toast("Give the sample an ID first", true);
+    const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
+    if (day.getTime() > Date.now()) return toast("That date is in the future", true);
     const missing = fields.filter(f => f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
     for (const f of fields) if (f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
     save.disabled = true; save.textContent = "Saving…";
     const clean = {}; fields.forEach(f => { if (vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
-    D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
+    D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
-    K.count++; K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
+    K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
     await persist(); toast("Saved " + s); render();
   };
   view.append(el("div", { class: "sticky-save" }, save));
