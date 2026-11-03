@@ -240,7 +240,7 @@ def write_workbook(docs, path):
                     if c.value:
                         c.hyperlink = c.value
                         c.style = "Hyperlink"
-    sheet("Locations", ["Location"], [[l["name"]] for l in docs.get("locations", [])])
+    sheet("Locations", ["Location", "Type"], [[l["name"], "Tray (A–D × 1–6)" if l.get("tray") else "Place"] for l in docs.get("locations", []) if not l.get("deleted")])
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=path.parent)
     os.close(fd)

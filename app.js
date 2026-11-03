@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.10";
+const APP_VERSION = "1.11";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -50,7 +50,7 @@ const filePut = (id, v) => tx("files", "readwrite", s => s.put(v, id));
 const S = { key: null, raw: null, keys: null, docs: null, nav: [{ v: "home" }], urls: [] };
 const D = () => S.docs;
 function blankDocs() {
-  return { projects: [], tasks: [], protocols: [], samples: [], log: [], locations: ["Bench", "Desiccator 1", "Desiccator 2", "Drying oven", "Sample cabinet", "Used up"].map(n => ({ id: uid("l"), name: n })), settings: {} };
+  return { projects: [], tasks: [], protocols: [], samples: [], log: [], locations: [], settings: {} };
 }
 function ensureShape(d) { const b = blankDocs(); for (const k of Object.keys(b)) if (!(k in d)) d[k] = b[k]; return d }
 let saving = Promise.resolve();
@@ -81,6 +81,7 @@ async function boot() {
 }
 async function start(raw, k, docs, keys) {
   S.raw = raw; S.key = k; S.docs = ensureShape(docs); S.keys = keys;
+  if (migrate()) await persist();
   $("lock").hidden = true; $("app").hidden = false; go("home", {}, true); setSyncUI(); syncSoon(600); flashVersion();
 }
 $("unlockForm").addEventListener("submit", async e => {
@@ -160,6 +161,64 @@ const proj = id => D().projects.find(p => p.id === id);
 const projName = id => (proj(id) || {}).name || "No project";
 const projColour = id => (proj(id) || {}).colour || "#22c55e";
 const prot = id => D().protocols.find(p => p.id === id);
+/* ---------- storage: trays (rows A–D × columns 1–6) and plain places ---------- */
+const ROWS = ["A", "B", "C", "D"], COLS = [1, 2, 3, 4, 5, 6];
+const TRAY_COLOURS = { White: "#f4f6f5", Gray: "#9aa3a0", Black: "#1b1f1d" };
+const locs = () => D().locations.filter(l => !l.deleted);
+const trays = () => locs().filter(l => l.tray);
+const slotName = (t, r, c) => t + " · " + r + c;
+function parseSlot(str) { const m = String(str || "").match(/^(.+) · ([A-D])([1-6])$/); return m && trays().some(t => t.name === m[1]) ? { tray: m[1], row: m[2], col: +m[3] } : null }
+const holder = (str, exceptId) => D().samples.find(x => !x.deleted && x.id !== exceptId && x.location === str);
+/* next free slot after `str`, along the row, then the next row, then the next tray */
+function nextSlot(str, exceptId) {
+  const all = trays().flatMap(t => ROWS.flatMap(r => COLS.map(c => slotName(t.name, r, c))));
+  const i = all.indexOf(str); if (i < 0) return "";
+  for (let j = i + 1; j < all.length; j++) if (!holder(all[j], exceptId)) return all[j];
+  return "";
+}
+function trayDot(t) { return el("span", { class: "tdot", style: "background:" + (t.colour || "#888") }) }
+/* tap a tray, then a row, then a column; or tap a plain place. onPick(locationString) */
+function locationPicker(current, onPick, exceptId) {
+  const box = el("div", { class: "stack" }); let tray = (parseSlot(current) || {}).tray || "", row = "";
+  const draw = () => {
+    box.replaceChildren();
+    const top = el("div", { class: "chips" });
+    trays().forEach(t => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(tray === t.name) }, trayDot(t), t.name); c.onclick = () => { tray = tray === t.name ? "" : t.name; row = ""; draw() }; top.append(c) });
+    locs().filter(l => !l.tray).forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(current === L.name), text: L.name }); c.onclick = () => { tray = ""; onPick(current === L.name ? "" : L.name) }; top.append(c) });
+    box.append(top);
+    if (!tray) return;
+    const rs = el("div", { class: "chips" }, el("span", { class: "fine", text: "Row" }));
+    ROWS.forEach(r => { const free = COLS.filter(c => !holder(slotName(tray, r, c), exceptId)).length; const c = el("button", { class: "chip", type: "button", "aria-pressed": String(row === r), text: r + (free ? "" : " · full") }); c.onclick = () => { row = r; draw() }; rs.append(c) });
+    box.append(rs);
+    if (!row) return;
+    const cs = el("div", { class: "chips" }, el("span", { class: "fine", text: "Column" }));
+    COLS.forEach(n => { const name = slotName(tray, row, n), h = holder(name, exceptId); const c = el("button", { class: "chip" + (h ? " taken" : ""), type: "button", "aria-pressed": String(current === name), text: String(n) }); c.onclick = () => { if (h) toast(name + " already holds " + h.sampleId + ". Saved there anyway.", true); onPick(name) }; cs.append(c) });
+    box.append(cs);
+  };
+  draw(); return box;
+}
+/* tray map: 4 × 6 grid showing which sample sits where */
+function trayMap(t) {
+  const g = el("div", { class: "traygrid" }, el("span", {}), ...COLS.map(c => el("span", { class: "fine", text: String(c) })));
+  ROWS.forEach(r => { g.append(el("span", { class: "fine", text: r })); COLS.forEach(c => { const h = holder(slotName(t.name, r, c)); g.append(h ? el("button", { class: "cell full", type: "button", text: h.sampleId.replace(/^.*-0*/, ""), title: h.sampleId, onclick: () => { closeSheet(); go("sample", { id: h.id }) } }) : el("span", { class: "cell" })) }) });
+  return g;
+}
+/* one-off data updates, safe to run on every device */
+function migrate() {
+  const st = D().settings = D().settings || {}; let changed = false;
+  if (!st.traysV1) {
+    D().locations.forEach(l => { if (!l.tray && l.name !== "Used up" && !l.deleted) { l.deleted = true; l.updated = Date.now() } });
+    if (!locs().some(l => l.name === "Used up")) D().locations.push({ id: uid("l"), name: "Used up", updated: Date.now() });
+    [["White 1", "White"], ["Gray 1", "Gray"], ["Black 1", "Black"]].forEach(([n, c]) => { if (!locs().some(l => l.name === n)) D().locations.push({ id: uid("l"), name: n, tray: true, colour: TRAY_COLOURS[c], updated: Date.now() }) });
+    st.traysV1 = true; changed = true;
+  }
+  const seen = new Set(); locs().forEach(l => { if (seen.has(l.name)) { l.deleted = true; l.updated = Date.now(); changed = true } seen.add(l.name) });
+  if (!st.forceN1) {
+    D().protocols.forEach(p => (p.fields || []).forEach(f => { if (String(f.unit).trim() === "MPa" && /compaction|pelleti|press/i.test(f.label)) { f.unit = "N"; f.label = f.label.replace(/pressure/i, "force"); p.updated = Date.now() } }));
+    st.forceN1 = true; changed = true;
+  }
+  return changed;
+}
 const liveFields = p => (p.fields || []).filter(f => !f.off);
 /* keep "removed" and "required" choices when a protocol is re-imported */
 function keepFieldChoices(oldF, newF) { const by = Object.fromEntries((oldF || []).map(f => [f.key, f])); newF.forEach(f => { const o = by[f.key]; if (o && o.off) f.off = true; if (o && o.userReq != null) { f.userReq = o.userReq; f.required = o.userReq } }); return newF }
@@ -488,11 +547,12 @@ function editSample(s) {
   const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, type: typeof s.values[k] === "number" ? "Number" : "Text", unit: "" }));
   const vals = Object.assign({}, s.values || {});
   const sid = el("input", { type: "text", value: s.sampleId, autocapitalize: "characters" });
-  const loc = el("select", {}, el("option", { value: "", text: "Not set" }), ...D().locations.map(L => el("option", { value: L.name, selected: s.location === L.name, text: L.name })));
+  const loc = { value: s.location || "" }; const locLbl = el("div", { class: "big", text: loc.value || "Not set" });
+  const locBox = el("div", {}); const drawLoc = () => locBox.replaceChildren(locationPicker(loc.value, v => { loc.value = v; locLbl.textContent = v || "Not set"; drawLoc() }, s.id)); drawLoc();
   const status = el("input", { type: "text", value: s.status || "" });
   const notes = el("textarea", {}); notes.value = s.notes || "";
   const dt = dateInput(dmy(s.created));
-  const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), loc, el("label", { text: "Status" }), status);
+  const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), locLbl, locBox, el("label", { text: "Status" }), status);
   if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
     fields.forEach(f => body.append(el("label", { text: f.label + (f.unit ? " (" + f.unit + ")" : "") }), fieldInput(f, vals))) }
   body.append(el("label", { text: "Notes" }), notes,
@@ -625,7 +685,7 @@ function protoVars(pr) {
   const lbl = fields.map(f => f.label.trim().toLowerCase());
   if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
   if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (kPa)", kind: "num" });
-  v.push({ key: "_date", label: "Date made", kind: "date" }, { key: "_loc", label: "Storage location", kind: "cat", order: D().locations.map(l => l.name) });
+  v.push({ key: "_date", label: "Date made", kind: "date" }, { key: "_loc", label: "Storage location", kind: "cat", order: locs().flatMap(l => l.tray ? ROWS.flatMap(r => COLS.map(c => slotName(l.name, r, c))) : [l.name]) });
   return v;
 }
 function varVal(s, key, pr) {
@@ -697,8 +757,7 @@ VIEWS.sample = (view, { id }) => {
   const pr = prot(s.protocolId);
   setTitle(s.sampleId, ((pr || {}).name || s.protocolName || "Photo log") + " · " + projName(s.projectId));
   view.append(el("button", { class: "ghost", type: "button", text: "✎ Edit sample and measurements", onclick: () => editSample(s) }));
-  const loc = el("div", { class: "chips" });
-  D().locations.forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(s.location === L.name), text: L.name }); c.onclick = async () => { s.location = L.name; s.updated = Date.now(); await persist(); toast("Moved to " + L.name); render() }; loc.append(c) });
+  const loc = locationPicker(s.location, async v => { s.location = v; s.updated = Date.now(); await persist(); toast(v ? "Moved to " + v : "Location cleared"); render() }, s.id);
   view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }), loc));
   const vals = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Measurements" }));
   const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, unit: "" }));
@@ -772,11 +831,12 @@ VIEWS.run = (view, { id }) => {
   top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }), el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "✏️ Remove or restore fields ›", onclick: () => go("protofields", { id: p.id }) }));
   const sid = el("input", { type: "text", value: nextSampleId(p.projectId), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId) });
-  const loc = el("div", { class: "chips" });
-  D().locations.forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(K.location === L.name), text: L.name }); c.onclick = () => { K.location = K.location === L.name ? "" : L.name; loc.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x.textContent === K.location))) }; loc.append(c) });
+  if (K.location && parseSlot(K.location) && holder(K.location)) K.location = nextSlot(K.location);
+  const locLbl = el("div", { class: "big green-t" }); const loc = el("div", {});
+  const drawLoc = () => { locLbl.textContent = K.location ? K.location + (parseSlot(K.location) ? "  (auto-advances)" : "") : "Not set"; loc.replaceChildren(locationPicker(K.location, v => { K.location = v; drawLoc() })) }; drawLoc();
   const dt = dateInput(K.date || dmy(Date.now())); dt.addEventListener("change", () => { K.date = dt.value.trim() === dmy(Date.now()) ? "" : dt.value.trim() });
   const today = el("button", { class: "ghost", type: "button", text: "Today", onclick: () => { dt.value = dmy(Date.now()); K.date = "" } });
-  top.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), loc);
+  top.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), locLbl, loc);
   view.append(top);
   const form = el("div", { class: "card" }); const derived = el("div", { class: "derived" });
   const recalc = () => { derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
@@ -808,7 +868,7 @@ VIEWS.run = (view, { id }) => {
     const clean = {}; fields.forEach(f => { if (vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
     D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
-    K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
+    if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx } K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
     await persist(); toast("Saved " + s); render();
   };
   view.append(el("div", { class: "sticky-save" }, save));
@@ -873,9 +933,14 @@ VIEWS.settings = view => {
       D().log.forEach(l => { if (!l.deleted && l.projectId === pid && (alsoLog.checked || (l.sampleId && ids.has(l.sampleId)))) { l.deleted = true; l.updated = Date.now(); nl++ } });
       await persist(); toast("Removed " + ns + " samples and " + nl + " entries. Numbering restarts at " + prefixOf(proj(pid)) + "-0001."); render() })));
   // locations
-  const lc = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Storage locations" }), el("p", { class: "small", text: D().locations.map(l => l.name).join(" · ") }));
-  const ln = el("input", { type: "text", placeholder: "Add a location" });
-  lc.append(el("div", { class: "inline" }, ln, el("button", { class: "ghost", type: "button", text: "Add", onclick: async () => { const v = ln.value.trim(); if (!v) return; D().locations.push({ id: uid("l"), name: v }); await persist(); render() } })));
+  const lc = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Storage" }));
+  locs().forEach(L => { const used = L.tray ? D().samples.filter(x => !x.deleted && (parseSlot(x.location) || {}).tray === L.name).length : D().samples.filter(x => !x.deleted && x.location === L.name).length;
+    lc.append(el("div", { class: "row between" }, el("span", { class: "small grow" }, L.tray ? trayDot(L) : null, " " + L.name + (L.tray ? " · " + used + "/24 filled" : used ? " · " + used : "")),
+      L.tray ? el("button", { class: "link", type: "button", text: "Map", onclick: () => sheet(L.name, el("div", { class: "stack" }, trayMap(L), el("p", { class: "fine", text: "Numbers are sample numbers. Tap one to open it." }))) }) : null,
+      el("button", { class: "link", type: "button", text: "Remove", onclick: async e => { if (e.target.dataset.c !== "1") { e.target.dataset.c = "1"; e.target.textContent = used ? "Tap again (" + used + " samples keep the label)" : "Tap again"; return } L.deleted = true; L.updated = Date.now(); await persist(); render() } }))) });
+  const ln = el("input", { type: "text", placeholder: "Name, e.g. White 2 or Fridge" }); let col = "White";
+  const cc = el("div", { class: "chips" }); const drawC = () => { cc.replaceChildren(...["White", "Gray", "Black", "Not a tray"].map(c => { const b = el("button", { class: "chip", type: "button", "aria-pressed": String(col === c) }, c in TRAY_COLOURS ? trayDot({ colour: TRAY_COLOURS[c] }) : null, " " + c); b.onclick = () => { col = c; drawC() }; return b })) }; drawC();
+  lc.append(el("label", { text: "Add a tray or place" }), ln, cc, el("button", { class: "ghost", type: "button", text: "Add", onclick: async () => { const v = ln.value.trim(); if (!v) return; if (locs().some(l => l.name === v)) return toast(v + " already exists", true); D().locations.push(col in TRAY_COLOURS ? { id: uid("l"), name: v, tray: true, colour: TRAY_COLOURS[col], updated: Date.now() } : { id: uid("l"), name: v, updated: Date.now() }); await persist(); render() } }));
   view.append(lc);
   // security
   view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Security" }),
