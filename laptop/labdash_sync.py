@@ -117,7 +117,7 @@ def when(ms):
     return dt.datetime.fromtimestamp(ms / 1000) if isinstance(ms, (int, float)) and ms else None
 
 
-def day(ms):
+def made_day(ms):
     w = when(ms)
     return w.date() if w else None
 
@@ -216,7 +216,7 @@ def write_workbook(docs, path):
            for l in sorted(docs.get("log", []), key=lambda l: -(l.get("when") or 0)) if not l.get("deleted")])
     samples = sorted([s for s in docs.get("samples", []) if not s.get("deleted")], key=lambda s: s.get("created") or 0)
     sheet("Samples", ["SampleID", "Project", "Protocol", "Date", "Location", "Status", "Notes"],
-          [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), day(s.get("created")),
+          [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), made_day(s.get("created")),
             s.get("location", ""), s.get("status", ""), s.get("notes", "")] for s in samples])
     for pr in protos.values():
         used = {k for s in samples if s.get("protocolId") == pr["id"] for k in (s.get("values") or {})}
@@ -228,7 +228,7 @@ def write_workbook(docs, path):
                 continue
             v = s.get("values") or {}
             dens, stren = derived(fields, v)
-            rows.append([s["sampleId"], day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
+            rows.append([s["sampleId"], made_day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
         header = ["SampleID", "Date", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
         sheet(pr["name"], header, rows)
     sheet("Links", ["Project", "Name", "Link", "Added"],
