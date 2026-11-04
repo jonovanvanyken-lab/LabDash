@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.17";
-const WHATS_NEW = "New app icon (the LabDash logo) · new look: slate theme, IBM Plex, two-column Lab form on wide screens";
+const APP_VERSION = "1.18";
+const WHATS_NEW = "← → to step through samples and log entries · pick a spot on the box map · samples grouped by protocol";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -218,6 +218,9 @@ function nextSlot(str, exceptId, okBatch) {
 /* n spots from `start`, along the row then onto the next row of the same tray */
 function rangeFrom(start, n) { const p = parseSlot(start); if (!p || !(n > 0)) return { slots: [], over: 0, left: 0 }; const all = allSlots(p.tray); const i = all.indexOf(start); const slots = all.slice(i, i + n); return { slots, over: n - slots.length, left: all.length - i } }
 function rangeLabel(slots) { if (!slots.length) return ""; if (slots.length === 1) return slots[0]; const a = parseSlot(slots[0]), z = parseSlot(slots[slots.length - 1]); return a.tray + " · " + a.row + a.col + "–" + z.row + z.col }
+let PICK = "buttons"; try { PICK = localStorage.getItem("labdash-pickmode") === "map" ? "map" : "buttons" } catch (_) {}
+const pickMode = () => PICK;
+function setPickMode(m) { PICK = m; try { localStorage.setItem("labdash-pickmode", m) } catch (_) {} }
 function trayDot(t) { return el("span", { class: "tdot", style: "background:" + (t.colour || "#888") }) }
 /* tap a tray, then a row, then a column; or tap a plain place. onPick(locationString) */
 function locationPicker(current, onPick, exceptId, okBatch) {
@@ -229,6 +232,13 @@ function locationPicker(current, onPick, exceptId, okBatch) {
     locs().filter(l => !l.tray).forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(current === L.name), text: L.name }); c.onclick = () => { tray = ""; onPick(current === L.name ? "" : L.name) }; top.append(c) });
     box.append(top);
     if (!tray) return;
+    /* pick the spot with Row/Column buttons or by tapping it on the box map; the choice is remembered on this device */
+    const seg = el("div", { class: "seg", style: "max-width:260px" }); [["buttons", "Buttons"], ["map", "Map"]].forEach(([m, l]) => seg.append(el("button", { type: "button", "aria-pressed": String(pickMode() === m), text: l, onclick: () => { setPickMode(m); draw() } })));
+    box.append(seg);
+    if (pickMode() === "map") { const t = trays().find(x => x.name === tray);
+      box.append(trayGrid(t, { occ, range: parseSlot(current) && parseSlot(current).tray === tray ? new Set([current]) : null, onCell: (sl, h) => { if (h) return toast(sl.split(" · ")[1] + (h.reserved ? " is kept for a pellet from " + h.s.sampleId : " already holds " + h.s.sampleId) + ". Pick an empty spot.", true); onPick(sl) } }),
+        el("p", { class: "fine", text: "Tap an empty spot. Dashed spots are kept for a batch's pellets." }));
+      return }
     const rs = el("div", { class: "chips" }, el("span", { class: "fine", text: "Row" }));
     ROWS.forEach(r => { const free = COLS.filter(c => !occ.has(slotName(tray, r, c))).length; const c = el("button", { class: "chip", type: "button", "aria-pressed": String(row === r), text: r + (free ? "" : " · full") }); c.onclick = () => { row = r; draw() }; rs.append(c) });
     box.append(rs);
@@ -542,7 +552,7 @@ function autoFold(view, viewName) {
   [...view.children].forEach(card => {
     if (!card.classList || !card.classList.contains("card") || card.dataset.nofold) return;
     const eb = card.firstElementChild; if (!eb || !eb.classList.contains("eyebrow")) return;
-    const key = viewName + ":" + eb.textContent.replace(/\s*[(·].*$/, "").replace(/[›▾]/g, "").trim().toLowerCase();
+    const key = viewName + ":" + (card.dataset.foldkey || eb.textContent.replace(/\s*[(·].*$/, "").replace(/[›▾]/g, "").trim().toLowerCase());
     const body = el("div", { class: "fold-body " + (card.classList.contains("list") ? "list" : "stack") });
     while (eb.nextSibling) body.append(eb.nextSibling);
     const open = !FOLD[key]; body.hidden = !open;
@@ -563,6 +573,7 @@ function render() {
   S.urls.forEach(u => URL.revokeObjectURL(u)); S.urls = [];
   const cur = S.nav[S.nav.length - 1]; const view = $("view"); view.replaceChildren(); view.className = "view";
   $("backBtn").hidden = S.nav.length < 2;
+  $("pager").hidden = true; $("syncPill").hidden = false;
   const root = S.nav[0].v;
   document.querySelectorAll("#tabs button[data-tab]").forEach(b => b.dataset.tab !== "capture" && (b.toggleAttribute("aria-current", b.dataset.tab === root), b.dataset.tab === root ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current")));
   (VIEWS[cur.v] || VIEWS.home)(view, cur.params || {});
@@ -570,6 +581,20 @@ function render() {
   window.scrollTo(0, 0);
 }
 function setTitle(t, sub) { $("title").textContent = t; $("subtitle").textContent = sub || "" }
+/* ← → in the top bar step through a list (samples of one protocol, entries of one project) in place of the sync pill.
+   Stepping swaps the current page rather than stacking pages, so Back still returns to where you came from. */
+function setPager(list, cur, viewName, what) {
+  const i = list.findIndex(x => x.id === cur.id); if (i < 0 || list.length < 2) return -1;
+  const to = x => () => { S.nav[S.nav.length - 1] = { v: viewName, params: { id: x.id } }; render() };
+  const pv = $("prevBtn"), nx = $("nextBtn");
+  pv.disabled = i === 0; nx.disabled = i === list.length - 1;
+  pv.onclick = i > 0 ? to(list[i - 1]) : null; nx.onclick = i < list.length - 1 ? to(list[i + 1]) : null;
+  pv.setAttribute("aria-label", "Previous " + what); nx.setAttribute("aria-label", "Next " + what);
+  $("pager").hidden = false; $("syncPill").hidden = true; return i;
+}
+const byIdNum = (a, b) => String(a.sampleId).localeCompare(String(b.sampleId), undefined, { numeric: true });
+/* samples logged with the same protocol (photo-log samples: the same project), in ID order */
+const sampleSiblings = s => D().samples.filter(x => !x.deleted && (s.protocolId ? x.protocolId === s.protocolId : !x.protocolId && x.projectId === s.projectId)).sort(byIdNum);
 
 /* ---------- views ---------- */
 const VIEWS = {};
@@ -613,7 +638,9 @@ function entryRow(l) {
 }
 VIEWS.entry = (view, { id }) => {
   const l = D().log.find(x => x.id === id && !x.deleted); if (!l) return back();
-  setTitle(l.title, projName(l.projectId));
+  const sib = D().log.filter(x => !x.deleted && x.projectId === l.projectId).sort((a, b) => a.when - b.when);
+  const i = setPager(sib, l, "entry", "entry");
+  setTitle(l.title, projName(l.projectId) + (i >= 0 ? " · " + (i + 1) + " of " + sib.length : ""));
   view.append(logCard(l), el("button", { class: "ghost", type: "button", text: "Open project " + projName(l.projectId), onclick: () => go("project", { id: l.projectId, tab: "log" }) }));
 };
 VIEWS.list = (view, { kind }) => {
@@ -715,13 +742,19 @@ VIEWS.project = (view, { id, tab }) => {
     const ls = D().log.filter(l => l.projectId === p.id && !l.deleted).sort((a, b) => b.when - a.when);
     ls.forEach(l => view.append(logCard(l))); if (!ls.length) view.append(el("p", { class: "empty", text: "No entries yet." }));
   } else {
-    view.append(el("button", { class: "ghost", type: "button", text: "Open Lab mode", onclick: () => go("lab", {}, true) }));
+    view.append(trays().length ? el("div", { class: "two" }, el("button", { class: "ghost", type: "button", text: "Open Lab mode", onclick: () => go("lab", {}, true) }), el("button", { class: "ghost", type: "button", text: "Box map", onclick: () => go("boxes", {}) }))
+      : el("button", { class: "ghost", type: "button", text: "Open Lab mode", onclick: () => go("lab", {}, true) }));
     D().protocols.filter(r => !r.deleted && r.projectId === p.id).forEach(r => view.append(el("button", { class: "ghost", type: "button", text: "📈 Results & charts: " + r.name, onclick: () => go("results", { id: r.id }) })));
+    /* samples grouped by protocol, newest first; each group folds away and stays folded on this device */
     const ss = D().samples.filter(s => s.projectId === p.id && !s.deleted).sort((a, b) => b.created - a.created);
-    const list = el("div", { class: "stack" });
-    ss.forEach(s => list.append(el("button", { class: "tapcard", type: "button", onclick: () => go("sample", { id: s.id }) }, el("div", { class: "row between" }, el("span", { class: "big green-t", text: s.sampleId }), el("span", { class: "small", text: s.location || "No location" })), el("div", { class: "muted small", text: ((prot(s.protocolId) || {}).name || s.protocolName || "Photo log") + " · " + fmtWhen(s.created) }))));
-    if (!ss.length) list.append(el("p", { class: "empty", text: "No samples yet." }));
-    view.append(list);
+    const groups = new Map(); ss.forEach(s => { const k = s.protocolId || "_photo"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s) });
+    groups.forEach((arr, k) => { const name = (prot(k) || {}).name || arr[0].protocolName || "Photo log";
+      const card = el("div", { class: "card list", "data-foldkey": "samples-" + p.id + "-" + k }, el("div", { class: "eyebrow", text: name + " · " + arr.length }));
+      arr.forEach(s => card.append(el("button", { class: "item tapcard", style: "border:0;padding:10px 0;background:none", onclick: () => go("sample", { id: s.id }) },
+        el("div", { class: "grow" }, el("div", { class: "row between" }, el("span", { class: "t green-t", text: s.sampleId }), el("span", { class: "small", text: s.location || (s.removed ? s.removed.reason : "No location") })),
+          el("div", { class: "m", text: fmtWhen(s.created) + (s.status && s.status !== "Made" ? " · " + s.status : "") })))));
+      view.append(card) });
+    if (!ss.length) view.append(el("p", { class: "empty", text: "No samples yet." }));
   }
   view.append(el("button", { class: "link", type: "button", text: "Edit project details", onclick: () => editProject(p) }));
   if (p.status === "Archived") view.append(el("button", { class: "ghost", type: "button", text: "Restore project", onclick: async () => { p.status = p.prevStatus || "Active"; p.updated = Date.now(); await persist(); toast(p.name + " restored"); render() } }));
@@ -1030,7 +1063,8 @@ VIEWS.results = (view, { id }) => {
 VIEWS.sample = (view, { id }) => {
   const s = D().samples.find(x => x.id === id); if (!s) return back();
   const pr = prot(s.protocolId);
-  setTitle(s.sampleId, ((pr || {}).name || s.protocolName || "Photo log") + " · " + projName(s.projectId));
+  const sib = s.deleted ? [] : sampleSiblings(s); const pos = setPager(sib, s, "sample", "sample");
+  setTitle(s.sampleId, ((pr || {}).name || s.protocolName || "Photo log") + (pos >= 0 ? " · " + (pos + 1) + " of " + sib.length : "") + " · " + projName(s.projectId));
   view.append(el("button", { class: "ghost", type: "button", text: "✎ Edit sample and measurements", onclick: () => editSample(s) }));
   const store = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }));
   if ((s.slots || []).length) {

@@ -286,3 +286,6 @@ button.stat:active,.tapcard2:active{filter:brightness(1.2)}
   .sheet-card{border-radius:16px;max-width:560px}
   .titles h1{font-size:19px}
 }
+/* v1.18: ← → pager in the top bar */
+.pager{display:flex;gap:6px;flex:none}
+.pager .icon-btn:disabled{opacity:.35;cursor:default}
