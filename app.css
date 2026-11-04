@@ -21,7 +21,10 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{touch-action:manipulation;margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--font);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
-html,body{overflow-x:hidden;max-width:100%}
+/* overflow-x:hidden on html and body makes iOS treat the body as its own scroll area, so the top bar stops sticking and the
+   bottom menu scrolls with the page. clip trims sideways overflow without creating a scroll area; no bounce at the ends. */
+html,body{max-width:100%;overscroll-behavior-y:none}
+body{overflow-x:clip}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
 h1,h2,h3,p{margin:0}
