@@ -157,6 +157,16 @@ def derived(fields, values):
     return dens, stren
 
 
+def clean_cell(x):
+    """Excel can't hold some invisible control characters or nested values; tidy them instead of failing."""
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    if isinstance(x, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", x)
+    if isinstance(x, (list, tuple, dict, set)):
+        return ILLEGAL_CHARACTERS_RE.sub("", json.dumps(x, ensure_ascii=False))
+    return x
+
+
 def write_workbook(docs, path):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
@@ -174,7 +184,7 @@ def write_workbook(docs, path):
         for c in ws[1]:
             c.font, c.fill = head_font, head_fill
         for r in rows:
-            ws.append(r)
+            ws.append([clean_cell(x) for x in r])
         for row in ws.iter_rows(min_row=2):
             for c in row:
                 if isinstance(c.value, dt.datetime):
@@ -219,9 +229,10 @@ def write_workbook(docs, path):
           [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), made_day(s.get("created")),
             s.get("location", ""), s.get("status", ""), s.get("notes", "")] for s in samples])
     for pr in protos.values():
+      try:
         used = {k for s in samples if s.get("protocolId") == pr["id"] for k in (s.get("values") or {})}
         # fields removed in the app are left out unless a sample already holds a value for them
-        fields = sorted([f for f in pr.get("fields", []) if not f.get("off") or f["key"] in used], key=lambda f: f.get("step", 0))
+        fields = sorted([f for f in pr.get("fields", []) if not f.get("off") or f["key"] in used], key=lambda f: f.get("step") or 0)
         rows = []
         for s in samples:
             if s.get("protocolId") != pr["id"]:
@@ -231,6 +242,8 @@ def write_workbook(docs, path):
             rows.append([s["sampleId"], made_day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
         header = ["SampleID", "Date", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
         sheet(pr["name"], header, rows)
+      except Exception as e:  # one odd protocol shouldn't stop the whole workbook
+        log(f"Skipped the sheet for protocol {pr.get('name')!r}: {e!r}")
     sheet("Links", ["Project", "Name", "Link", "Added"],
           [[p["name"], k.get("title", ""), k.get("url", ""), when(k.get("added"))] for p in projects.values() for k in p.get("links") or []])
     for ws in wb.worksheets:
