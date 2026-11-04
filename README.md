@@ -9,7 +9,7 @@ A private lab notebook that runs on your phone: projects, tasks and deadlines, a
 - Everything is encrypted on the device before it is stored or sent anywhere. A random 256-bit data key encrypts the notebook with AES-GCM. That key is itself encrypted with a key derived from your passphrase (PBKDF2-SHA256, 600,000 rounds).
 - Sync stores only the encrypted notebook (`vault.json`) and encrypted photos (`img/*.json`) in a **private** repository you own. The app refuses to sync to a public repository.
 - The GitHub access token is kept inside this device's encrypted copy. It is never synced or uploaded.
-- The page only talks to its own address and `api.github.com` (enforced by its Content Security Policy). There is no analytics and no third-party code apart from the bundled SheetJS reader for Excel import.
+- The page only talks to its own address and `api.github.com` (enforced by its Content Security Policy). There is no analytics and no third-party code apart from the bundled SheetJS reader for Excel import. The IBM Plex fonts are bundled in `fonts/` (SIL Open Font License) and load from the app itself.
 - There is no passphrase reset. Keep the passphrase in a password manager.
 
 ## Laptop copy into OneDrive

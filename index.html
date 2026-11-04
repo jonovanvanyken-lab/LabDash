@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<meta name="theme-color" content="#0a0d0c">
+<meta name="theme-color" content="#081430">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,14 +13,18 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="app.css?v=1.15">
+<link rel="preload" href="fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/ibm-plex-sans-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css?v=1.16">
 <title>LabDash</title>
 </head>
 <body>
 
+<div id="splash" class="splash" aria-hidden="true"><img src="icons/logo.png" alt="" width="240" height="240"><span>LabDash</span></div>
+
 <main id="lock" class="lock">
   <div class="lock-card">
-    <div class="brand"><img src="icons/icon-192.png" alt="" width="44" height="44"><h1>LabDash</h1></div>
+    <div class="brand"><img src="icons/logo-96.png" alt="" width="48" height="48"><h1>LabDash</h1></div>
     <p class="sub" id="lockSub">Checking this device…</p>
 
     <form id="unlockForm" hidden autocomplete="off">
@@ -73,9 +77,10 @@
   </header>
   <section id="view" class="view" aria-live="polite"></section>
   <nav class="tabs" id="tabs" aria-label="Sections">
+    <img class="rail-logo" src="icons/logo-96.png" alt="" width="44" height="44">
     <button type="button" data-tab="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg><span>Home</span></button>
     <button type="button" data-tab="projects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/></svg><span>Projects</span></button>
-    <button type="button" data-tab="capture" class="fab" aria-label="New log entry or photo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button type="button" data-tab="capture" class="fab" aria-label="New log entry or photo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New</span></button>
     <button type="button" data-tab="lab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/></svg><span>Lab</span></button>
     <button type="button" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Settings</span></button>
   </nav>
@@ -86,6 +91,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 
 <script src="vendor/xlsx.full.min.js" defer></script>
-<script src="app.js?v=1.15" defer></script>
+<script src="app.js?v=1.16" defer></script>
 </body>
 </html>
