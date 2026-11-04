@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.11";
+const APP_VERSION = "1.12";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -217,7 +217,47 @@ function migrate() {
     D().protocols.forEach(p => (p.fields || []).forEach(f => { if (String(f.unit).trim() === "MPa" && /compaction|pelleti|press/i.test(f.label)) { f.unit = "N"; f.label = f.label.replace(/pressure/i, "force"); p.updated = Date.now() } }));
     st.forceN1 = true; changed = true;
   }
+  if (!st.mixV1) { addMixProtocol(); st.mixV1 = true; changed = true }
+  if (linkPellets()) changed = true;
   return changed;
+}
+function addMixProtocol() {
+  const pel = D().protocols.find(p => !p.deleted && /pellet/i.test(p.name) && (p.fields || []).some(f => /breaking force/i.test(f.label)));
+  const pj = pel ? pel.projectId : ((D().projects.find(p => /fjh/i.test(p.name)) || {}).id || "");
+  let mix = D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
+  if (!mix) {
+    const sizeOpts = ((pel && pel.fields.find(f => /particle size/i.test(f.label))) || {}).options || ["<45", "45-75", "75-150", "150-300"];
+    const F = (key, step, section, label, type, unit, extra) => Object.assign({ key, step, section, label, type, unit: unit || "", options: [], required: false, keep: false, hint: "" }, extra || {});
+    const dry = (n, s0, cond) => [F("dry" + n + "_method", s0, "Drying stage " + n, "Stage " + n + " drying", "Choice", "", { options: ["Oven", "Air"], keep: true, ...cond }), F("dry" + n + "_temp", s0 + 1, "Drying stage " + n, "Stage " + n + " temperature", "Number", "°C", { keep: true, ...cond }), F("dry" + n + "_time", s0 + 2, "Drying stage " + n, "Stage " + n + " time", "Number", "h", { keep: true, ...cond })];
+    const c2 = { showIf: { key: "dry2", equals: "Second drying stage" } };
+    mix = { id: uid("r"), kind: "fjhmix", idPrefix: "MIX", name: "FJH mixture preparation", projectId: pj, description: "Make a fly ash and carbon mixture. Percentages are of the total mass, water included; the app works out the grams. Gives the mixture a batch ID that pellets can be linked to.", docLink: "", updated: Date.now(),
+      fields: [F("total_mass", 1, "Mixture", "Total mass", "Number", "g", { required: true, role: "total", hint: "Everything in the mix, water included" }),
+        F("fa_pct", 2, "Mixture", "Fly ash", "Number", "%", { pctOf: "total_mass" }),
+        F("carbon_type", 3, "Mixture", "Carbon type", "Choice", "", { options: ["Coke", "Graphite"] }),
+        F("carbon_pct", 4, "Mixture", "Carbon", "Number", "%", { pctOf: "total_mass" }),
+        F("carbon_size", 5, "Mixture", "Carbon particle size", "Choice", "µm", { options: sizeOpts }),
+        F("water_pct", 6, "Mixture", "Water", "Number", "%", { pctOf: "total_mass" }),
+        F("pellets_made", 7, "Pellets", "Pellets made", "Number", ""),
+        ...dry(1, 8, {}),
+        F("dry2", 11, "Drying stage 1", "Second drying stage", "Check", "", { options: ["Second drying stage"] }),
+        ...dry(2, 12, c2)] };
+    D().protocols.push(mix);
+  }
+}
+/* give the pellet protocol a "Mixture batch" field (runs on every start; does nothing once linked) */
+function linkPellets() {
+  const pel = D().protocols.find(p => !p.deleted && /pellet/i.test(p.name) && (p.fields || []).some(f => /breaking force/i.test(f.label)));
+  const mix = D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
+  if (!pel || !mix) return false;
+  if (!mix.projectId && pel.projectId) { mix.projectId = pel.projectId; mix.updated = Date.now(); if (pel.fields.some(f => f.type === "Batch")) return true }
+  if (pel.fields.some(f => f.type === "Batch")) return false;
+  {
+    pel.fields.forEach(f => { if (/^water added$/i.test(f.label.trim()) && /dry mass/i.test(f.hint || "")) f.hint = "% of total mix mass (from the batch)" });
+    pel.fields.push({ key: "batch", step: 0, section: "Batch", label: "Mixture batch", type: "Batch", unit: "", options: [], required: false, keep: true, from: mix.id, hint: "Pick the batch these pellets came from; its details fill in below",
+      map: { "additive": "carbon_type", "additive content": "carbon_pct", "coke particle size": "carbon_size", "carbon particle size": "carbon_size", "water added": "water_pct", "drying": "dry1_method" } });
+    pel.updated = Date.now();
+  }
+  return true;
 }
 const liveFields = p => (p.fields || []).filter(f => !f.off);
 /* keep "removed" and "required" choices when a protocol is re-imported */
@@ -239,10 +279,10 @@ function dueText(t) {
   if (d < 0) return "Overdue by " + (-d) + (d === -1 ? " day" : " days"); if (d === 0) return "Due today"; if (d === 1) return "Due tomorrow"; return "Due " + fmtDay(t.due);
 }
 function prefixOf(p) { return (p && p.prefix) || (p ? p.name.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() : "S") }
-function nextSampleId(projectId) {
-  const p = proj(projectId); const pre = prefixOf(p); let max = 0;
+function nextSampleId(projectId, pr) {
+  const p = proj(projectId); const pre = prefixOf(p) + (pr && pr.idPrefix ? "-" + pr.idPrefix : ""); let max = 0;
   for (const s of D().samples) { if (s.purged) continue; const m = String(s.sampleId || "").match(/^(.*)-(\d+)$/); if (m && m[1] === pre) max = Math.max(max, +m[2]) }
-  return pre + "-" + String(max + 1).padStart(4, "0");
+  return pre + "-" + String(max + 1).padStart(pr && pr.idPrefix ? 3 : 4, "0");
 }
 function num(v) { if (v == null || v === "") return NaN; return Number(String(v).replace(",", ".")) }
 function derivedNum(fields, values) {
@@ -257,7 +297,35 @@ function derivedFor(fields, values) {
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const out = [];
   if (m > 0 && d > 0 && h > 0) out.push(["Density", (m / (Math.PI * (d / 20) ** 2 * (h / 10))).toFixed(2) + " g/cm³"]);
   if (d > 0 && f > 0) out.push(["Strength (F/A)", (1000 * f / (Math.PI * (d / 2) ** 2)).toFixed(0) + " kPa"]);
+  const tot = fields.find(x => x.role === "total"), ps = fields.filter(x => x.pctOf); const T = tot ? num(values[tot.key]) : NaN;
+  if (T > 0) ps.forEach(x => { const q = num(values[x.key]); if (q >= 0) out.push([x.label, (T * q / 100).toFixed(2) + " g"]) });
+  const sum = pctSum(fields, values); if (sum != null && Math.abs(sum - 100) > 0.01) out.push(["⚠ Adds up to", +sum.toFixed(2) + "% (should be 100%)"]);
   return out;
+}
+function pctSum(fields, values) { const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
+/* fields that only show when another field has a given value (e.g. stage 2 drying) */
+const checkLabel = f => (f.options && f.options[0]) || "Done";
+const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
+/* batch links: a Batch field lists samples from another protocol and copies their details */
+const batchList = f => D().samples.filter(x => !x.deleted && x.protocolId === f.from).sort((a, b) => b.created - a.created);
+function batchLabel(b) { const v = b.values || {}; return b.sampleId + " · " + [v.carbon_type ? v.carbon_type + (v.carbon_pct != null ? " " + v.carbon_pct + "%" : "") : "no carbon", v.water_pct != null ? v.water_pct + "% water" : ""].filter(Boolean).join(", ") + " · " + dmy(b.created) }
+function applyBatch(f, fields, vals) {
+  const b = D().samples.find(x => !x.deleted && x.sampleId === vals[f.key]); if (!b) return;
+  const src = prot(b.protocolId); const map = f.map || {};
+  fields.forEach(t => { if (t === f) return; const lbl = t.label.trim().toLowerCase();
+    let sk = map[lbl]; if (!sk && src) { const same = src.fields.find(x => x.label.trim().toLowerCase() === lbl); if (same) sk = same.key }
+    if (!sk) return; const v = (b.values || {})[sk];
+    vals[t.key] = v != null && v !== "" ? String(v) : ((t.options || []).includes("None") ? "None" : "") });
+}
+function batchCard(id, exceptSampleId) {
+  const b = D().samples.find(x => !x.deleted && x.sampleId === id); if (!b) return null; const pr = prot(b.protocolId);
+  const used = D().samples.filter(x => !x.deleted && x.id !== exceptSampleId && Object.values(x.values || {}).includes(id)).length;
+  const c = el("div", { class: "card stack" }, el("div", { class: "row between" }, el("span", { class: "eyebrow", text: "Batch " + b.sampleId }), el("button", { class: "link", type: "button", text: "Open ›", onclick: () => { closeSheet(); go("sample", { id: b.id }) } })));
+  const fs = pr ? pr.fields.filter(x => shown(x, b.values) && (b.values || {})[x.key] != null).sort((a, z) => a.step - z.step) : [];
+  fs.forEach(x => c.append(el("div", { class: "kv" }, el("span", { text: x.label }), el("span", { text: x.type === "Check" ? "Yes" : b.values[x.key] + (x.unit ? " " + x.unit : "") }))));
+  derivedFor(pr ? pr.fields : [], b.values || {}).forEach(([k, v]) => c.append(el("div", { class: "kv" }, el("span", { text: k }), el("span", { class: "green-t", text: v }))));
+  const made = (b.values || {}).pellets_made; c.append(el("p", { class: "fine", text: "Made " + dmy(b.created) + (b.location ? " · " + b.location : "") + " · " + used + (made ? " of " + made : "") + " pellets logged from this batch" }));
+  return c;
 }
 function sheet(title, body) { const b = $("sheetBody"); b.replaceChildren(el("h2", { text: title }), body); $("sheet").hidden = false }
 function closeSheet() { $("sheet").hidden = true; $("sheetBody").replaceChildren() }
@@ -529,16 +597,25 @@ function logCard(l) {
   return c;
 }
 /* ---------- shared field input (lab form and edit sheet) ---------- */
-function fieldInput(f, vals) {
+/* onChange(redraw): redraw is true when other fields may need to appear, hide or refill */
+function fieldInput(f, vals, onChange, fields) {
+  const changed = r => onChange && onChange(r);
+  const dep = (fields || []).some(x => x.showIf && x.showIf.key === f.key);
+  if (f.type === "Batch") {
+    const sel = el("select", {}, el("option", { value: "", text: "Pick a batch…" }), ...batchList(f).map(b => el("option", { value: b.sampleId, selected: vals[f.key] === b.sampleId, text: batchLabel(b) })));
+    if (!batchList(f).length) sel.append(el("option", { value: "", disabled: true, text: "No batches logged yet" }));
+    sel.addEventListener("change", () => { vals[f.key] = sel.value; if (sel.value && fields) applyBatch(f, fields, vals); changed(true) });
+    return sel;
+  }
   if (f.type === "Choice" || f.type === "Check") {
-    const opts = f.type === "Check" ? ["Done"] : f.options; const ch = el("div", { class: "chips" });
+    const opts = f.type === "Check" ? [checkLabel(f)] : f.options; const ch = el("div", { class: "chips" });
     const cur = vals[f.key] != null ? String(vals[f.key]) : "";
     const all = cur && !opts.includes(cur) ? opts.concat([cur]) : opts;
-    all.forEach(o => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(cur === o), text: o }); c.onclick = () => { vals[f.key] = vals[f.key] === o ? "" : o; ch.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x.textContent === vals[f.key]))) }; ch.append(c) });
+    all.forEach(o => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(cur === o), text: (f.type === "Check" ? (cur === o ? "☑ " : "☐ ") : "") + o }); c.dataset.v = o; c.onclick = () => { vals[f.key] = vals[f.key] === o ? "" : o; ch.querySelectorAll(".chip").forEach(x => { x.setAttribute("aria-pressed", String(x.dataset.v === vals[f.key])); if (f.type === "Check") x.textContent = (x.dataset.v === vals[f.key] ? "☑ " : "☐ ") + x.dataset.v }); changed(dep) }; ch.append(c) });
     return ch;
   }
-  const inp = el("input", { type: "text", inputmode: f.type === "Number" ? "decimal" : "text", value: vals[f.key] != null ? String(vals[f.key]) : "" });
-  inp.addEventListener("input", () => { vals[f.key] = inp.value.trim() }); return inp;
+  const inp = el("input", { type: "text", inputmode: f.type === "Number" ? "decimal" : "text", placeholder: f.type === "Number" ? "0.00" : "", value: vals[f.key] != null ? String(vals[f.key]) : "" });
+  inp.addEventListener("input", () => { vals[f.key] = inp.value.trim(); changed(false) }); return inp;
 }
 
 /* ---------- edit a sample ---------- */
@@ -554,14 +631,14 @@ function editSample(s) {
   const dt = dateInput(dmy(s.created));
   const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), locLbl, locBox, el("label", { text: "Status" }), status);
   if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
-    fields.forEach(f => body.append(el("label", { text: f.label + (f.unit ? " (" + f.unit + ")" : "") }), fieldInput(f, vals))) }
+    const fb = el("div", { class: "stack" }); const drawF = () => fb.replaceChildren(...fields.filter(f => shown(f, vals)).flatMap(f => [el("label", { text: f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : "") }), fieldInput(f, vals, r => { if (r) drawF() }, fields), f.type === "Batch" && vals[f.key] ? batchCard(vals[f.key], s.id) : null].filter(Boolean))); drawF(); body.append(fb) }
   body.append(el("label", { text: "Notes" }), notes,
     el("button", { class: "primary", type: "button", text: "Save changes", onclick: async () => {
       const nid = sid.value.trim(); if (!nid) return toast("The sample needs an ID", true);
       if (nid !== s.sampleId && sampleBy(nid)) return toast(nid + " already exists", true);
       const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
       for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
-      const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v });
+      const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (shown(f, vals) && v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v });
       if (nid !== s.sampleId) D().log.forEach(l => { if (l.sampleId === s.sampleId) { l.sampleId = nid; l.updated = Date.now() } });
       Object.assign(s, { sampleId: nid, created: dmy(day.getTime()) === dmy(s.created) ? s.created : onDay(day, s.created), logged: s.logged || s.created, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
       await persist(); closeSheet(); render(); toast("Saved " + nid) } }),
@@ -762,7 +839,10 @@ VIEWS.sample = (view, { id }) => {
   const vals = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Measurements" }));
   const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, unit: "" }));
   let any = false;
-  fields.forEach(f => { const v = (s.values || {})[f.key]; if (v === undefined || v === "") return; any = true; vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), el("span", { text: v + (f.unit ? " " + f.unit : "") }))) });
+  fields.forEach(f => { const v = (s.values || {})[f.key]; if (v === undefined || v === "" || !shown(f, s.values)) return; any = true;
+    if (f.type === "Batch") { const b = D().samples.find(x => !x.deleted && x.sampleId === v); vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), b ? el("button", { class: "link", type: "button", style: "padding:0", text: v + " ›", onclick: () => go("sample", { id: b.id }) }) : el("span", { text: v }))); return }
+    vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), el("span", { text: f.type === "Check" ? "Yes" : v + (f.unit ? " " + f.unit : "") }))) });
+  if (pr && pr.idPrefix) { const kids = D().samples.filter(x => !x.deleted && x.id !== s.id && Object.values(x.values || {}).includes(s.sampleId)); if (kids.length) vals.append(el("div", { class: "kv" }, el("span", { text: "Pellets logged from this batch" }), el("span", { class: "green-t", text: kids.map(k => k.sampleId).join(", ") }))) }
   derivedFor(fields, s.values || {}).forEach(([k, v]) => { any = true; vals.append(el("div", { class: "kv" }, el("span", { text: k }), el("span", { class: "green-t", text: v }))) });
   if (!any) vals.append(el("p", { class: "empty", text: "No measurements recorded." }));
   view.append(vals);
@@ -829,31 +909,26 @@ VIEWS.run = (view, { id }) => {
   const top = el("div", { class: "stack" });
   if (p.docLink) top.append(el("a", { class: "link", href: p.docLink, target: "_blank", rel: "noopener", text: "Open protocol document ↗" }));
   top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }), el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "✏️ Remove or restore fields ›", onclick: () => go("protofields", { id: p.id }) }));
-  const sid = el("input", { type: "text", value: nextSampleId(p.projectId), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
-  const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId) });
+  const sid = el("input", { type: "text", value: nextSampleId(p.projectId, p), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
+  const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId, p) });
   if (K.location && parseSlot(K.location) && holder(K.location)) K.location = nextSlot(K.location);
   const locLbl = el("div", { class: "big green-t" }); const loc = el("div", {});
   const drawLoc = () => { locLbl.textContent = K.location ? K.location + (parseSlot(K.location) ? "  (auto-advances)" : "") : "Not set"; loc.replaceChildren(locationPicker(K.location, v => { K.location = v; drawLoc() })) }; drawLoc();
   const dt = dateInput(K.date || dmy(Date.now())); dt.addEventListener("change", () => { K.date = dt.value.trim() === dmy(Date.now()) ? "" : dt.value.trim() });
   const today = el("button", { class: "ghost", type: "button", text: "Today", onclick: () => { dt.value = dmy(Date.now()); K.date = "" } });
-  top.append(el("label", { text: "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), locLbl, loc);
+  top.append(el("label", { text: p.idPrefix ? "BATCH ID" : "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), locLbl, loc);
   view.append(top);
   const form = el("div", { class: "card" }); const derived = el("div", { class: "derived" });
   const recalc = () => { derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
-  fields.forEach(f => {
-    const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", {}, f.label + (f.unit ? " (" + f.unit + ")" : ""), f.required ? el("span", { class: "req", text: " *" }) : null), el("small", { text: f.section || "" })));
-    if (f.hint || f.keep) box.append(el("div", { class: "hint2", text: [f.hint, f.keep ? "kept for the next sample" : ""].filter(Boolean).join(" · ") }));
-    if (f.type === "Choice" || f.type === "Check") {
-      const opts = f.type === "Check" ? ["Done"] : f.options; const ch = el("div", { class: "chips" });
-      opts.forEach(o => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(vals[f.key] === o), text: o }); c.onclick = () => { vals[f.key] = vals[f.key] === o ? "" : o; ch.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x.textContent === vals[f.key]))) }; ch.append(c) });
-      box.append(ch);
-    } else {
-      const inp = el("input", { type: "text", inputmode: f.type === "Number" ? "decimal" : "text", placeholder: f.type === "Number" ? "0.00" : "", value: vals[f.key] != null ? vals[f.key] : "" });
-      inp.addEventListener("input", () => { vals[f.key] = inp.value.trim(); recalc() }); box.append(inp);
-    }
-    form.append(box);
-  });
-  recalc(); view.append(form, derived);
+  const drawForm = () => { form.replaceChildren();
+    fields.filter(f => shown(f, vals)).forEach(f => {
+      const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", {}, f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : ""), f.required ? el("span", { class: "req", text: " *" }) : null), el("small", { text: f.section || "" })));
+      if (f.hint || f.keep) box.append(el("div", { class: "hint2", text: [f.hint, f.keep ? "kept for the next sample" : ""].filter(Boolean).join(" · ") }));
+      box.append(fieldInput(f, vals, r => { if (r) drawForm(); recalc() }, fields));
+      if (f.type === "Batch" && vals[f.key]) { const bc = batchCard(vals[f.key]); if (bc) box.append(bc) }
+      form.append(box);
+    }); recalc() };
+  drawForm(); view.append(form, derived);
   const st = { photos: [] }; const notes = el("textarea", { placeholder: "Notes for this sample", style: "min-height:80px" });
   view.append(photoPicker(st), notes);
   const save = el("button", { class: "primary", type: "button" }); const label = () => save.textContent = "Save " + (sid.value.trim() || "sample"); label(); sid.addEventListener("input", label);
@@ -861,11 +936,12 @@ VIEWS.run = (view, { id }) => {
     const s = sid.value.trim(); if (!s) return toast("Give the sample an ID first", true);
     const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
     if (day.getTime() > Date.now()) return toast("That date is in the future", true);
-    const missing = fields.filter(f => f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
+    const missing = fields.filter(f => shown(f, vals) && f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
-    for (const f of fields) if (f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
+    for (const f of fields) if (shown(f, vals) && f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
+    const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("The percentages add up to " + +sum.toFixed(2) + "%, not 100%.", true);
     save.disabled = true; save.textContent = "Saving…";
-    const clean = {}; fields.forEach(f => { if (vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
+    const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
     D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
     if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx } K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
@@ -971,7 +1047,7 @@ function protocolFromJson(o) {
   if (!o || !o.name || !Array.isArray(o.fields)) throw new Error("needs a name and a list of fields");
   const pj = D().projects.find(p => p.name.toLowerCase() === String(o.project || "").toLowerCase());
   return { id: uid("r"), name: String(o.name), projectId: pj ? pj.id : "", description: o.description || "", docLink: o.docLink || "", updated: Date.now(),
-    fields: o.fields.map((f, i) => ({ key: f.key || slug(f.label || f.field || "field" + i), step: f.step || i + 1, section: f.section || "", label: String(f.label || f.field), type: ["Number", "Text", "Choice", "Check"].includes(f.type) ? f.type : "Text", unit: f.unit || "", options: Array.isArray(f.options) ? f.options : String(f.options || "").split(";").map(s => s.trim()).filter(Boolean), required: !!f.required && String(f.required).toLowerCase() !== "no", keep: !!f.keep && String(f.keep).toLowerCase() !== "no", hint: f.hint || "" })) };
+    fields: o.fields.map((f, i) => ({ key: f.key || slug(f.label || f.field || "field" + i), step: f.step || i + 1, section: f.section || "", label: String(f.label || f.field), type: ["Number", "Text", "Choice", "Check"].includes(f.type) ? f.type : "Text", unit: f.unit || "", options: Array.isArray(f.options) ? f.options : String(f.options || "").split(";").map(s => s.trim()).filter(Boolean), required: !!f.required && String(f.required).toLowerCase() !== "no", keep: !!f.keep && String(f.keep).toLowerCase() !== "no", hint: f.hint || "", ...(f.showIf ? { showIf: f.showIf } : {}), ...(f.pctOf ? { pctOf: f.pctOf } : {}), ...(f.role ? { role: f.role } : {}) })) };
 }
 const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "f";
 
