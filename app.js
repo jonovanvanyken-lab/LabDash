@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.13";
+const APP_VERSION = "1.14";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -225,6 +225,15 @@ function migrate() {
       if (f.key === "water_pct") f.hint = "% of the total mass" });
     p.description = "Make a fly ash and carbon mixture. Water is a % of the total mass; fly ash and carbon are % of the solids. The app works out the grams. Gives the mixture a batch ID that pellets can be linked to."; p.updated = Date.now() });
     st.mixV2 = true; changed = true }
+  if (!st.mixV3) { const OLD = "Second drying stage", NEW = "Second stage drying performed";
+    D().protocols.forEach(p => { if (p.kind !== "fjhmix") return; p.fields.forEach(f => {
+      if (f.key === "fa_pct") { f.type = "Calc"; f.calc = "fa"; f.hint = "Worked out for you from the carbon and water %" }
+      if (f.key === "carbon_pct") f.hint = "% of the solids (fly ash + carbon). Fly ash is the rest";
+      if (f.key === "carbon_size") f.options = ["Original", "<125"];
+      if (f.key === "dry2") { f.label = NEW; f.options = [NEW]; f.keep = false }
+      if (f.showIf && f.showIf.key === "dry2") f.showIf = { key: "dry2", equals: NEW } }); p.updated = Date.now();
+      D().samples.forEach(x => { if (x.protocolId === p.id && x.values && x.values.dry2 === OLD) { x.values.dry2 = NEW; x.updated = Date.now() } }) });
+    st.mixV3 = true; changed = true }
   return changed;
 }
 function addMixProtocol() {
@@ -232,20 +241,20 @@ function addMixProtocol() {
   const pj = pel ? pel.projectId : ((D().projects.find(p => /fjh/i.test(p.name)) || {}).id || "");
   let mix = D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
   if (!mix) {
-    const sizeOpts = ((pel && pel.fields.find(f => /particle size/i.test(f.label))) || {}).options || ["<45", "45-75", "75-150", "150-300"];
+    const sizeOpts = ["Original", "<125"];
     const F = (key, step, section, label, type, unit, extra) => Object.assign({ key, step, section, label, type, unit: unit || "", options: [], required: false, keep: false, hint: "" }, extra || {});
     const dry = (n, s0, cond) => [F("dry" + n + "_method", s0, "Drying stage " + n, "Stage " + n + " drying", "Choice", "", { options: ["Oven", "Air"], keep: true, ...cond }), F("dry" + n + "_temp", s0 + 1, "Drying stage " + n, "Stage " + n + " temperature", "Number", "°C", { keep: true, ...cond }), F("dry" + n + "_time", s0 + 2, "Drying stage " + n, "Stage " + n + " time", "Number", "h", { keep: true, ...cond })];
-    const c2 = { showIf: { key: "dry2", equals: "Second drying stage" } };
+    const c2 = { showIf: { key: "dry2", equals: "Second stage drying performed" } };
     mix = { id: uid("r"), kind: "fjhmix", idPrefix: "MIX", name: "FJH mixture preparation", projectId: pj, description: "Make a fly ash and carbon mixture. Water is a % of the total mass; fly ash and carbon are % of the solids. The app works out the grams. Gives the mixture a batch ID that pellets can be linked to.", docLink: "", updated: Date.now(),
       fields: [F("total_mass", 1, "Mixture", "Total mass", "Number", "g", { required: true, role: "total", hint: "Everything in the mix, water included" }),
-        F("fa_pct", 2, "Mixture", "Fly ash", "Number", "%", { pctOf: "dry", hint: "% of the solids (fly ash + carbon). Leave blank to use 100 − carbon" }),
+        F("fa_pct", 2, "Mixture", "Fly ash", "Calc", "%", { pctOf: "dry", calc: "fa", hint: "Worked out for you from the carbon and water %" }),
         F("carbon_type", 3, "Mixture", "Carbon type", "Choice", "", { options: ["Coke", "Graphite"] }),
-        F("carbon_pct", 4, "Mixture", "Carbon", "Number", "%", { pctOf: "dry", hint: "% of the solids (fly ash + carbon)" }),
+        F("carbon_pct", 4, "Mixture", "Carbon", "Number", "%", { pctOf: "dry", hint: "% of the solids (fly ash + carbon). Fly ash is the rest" }),
         F("carbon_size", 5, "Mixture", "Carbon particle size", "Choice", "µm", { options: sizeOpts }),
         F("water_pct", 6, "Mixture", "Water", "Number", "%", { pctOf: "total_mass", hint: "% of the total mass" }),
         F("pellets_made", 7, "Pellets", "Pellets made", "Number", ""),
         ...dry(1, 8, {}),
-        F("dry2", 11, "Drying stage 1", "Second drying stage", "Check", "", { options: ["Second drying stage"] }),
+        F("dry2", 11, "Drying stage 1", "Second stage drying performed", "Check", "", { options: ["Second stage drying performed"] }),
         ...dry(2, 12, c2)] };
     D().protocols.push(mix);
   }
@@ -325,6 +334,10 @@ function mixGrams(fields, values) {
 }
 function pctSum(fields, values) { const ds = fields.filter(x => x.pctOf === "dry"); if (ds.length) { const sp = solidsPct(fields, values); const ks = ds.filter(x => x.key in sp); return ks.length ? ks.reduce((a, x) => a + sp[x.key], 0) : null }
   const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
+/* calculated fields: fly ash = 100 − carbon (of the solids); also shown as % of the whole mix using the water % */
+function faCalc(vals) { const c = num(vals.carbon_pct), w = num(vals.water_pct); const solids = 100 - (c >= 0 ? c : 0); const total = solids * (100 - (w >= 0 ? w : 0)) / 100; return { solids, total, ok: solids >= 0 } }
+function computeCalc(fields, vals) { fields.forEach(f => { if (f.type === "Calc" && f.calc === "fa") vals[f.key] = String(+faCalc(vals).solids.toFixed(2)) }) }
+function calcText(f, vals) { if (f.calc !== "fa") return ""; const r = faCalc(vals); if (!r.ok) return "Carbon is over 100%"; return +r.solids.toFixed(2) + "% of the solids  ·  " + +r.total.toFixed(2) + "% of the whole mix" }
 /* fields that only show when another field has a given value (e.g. stage 2 drying) */
 const checkLabel = f => (f.options && f.options[0]) || "Done";
 const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
@@ -623,6 +636,7 @@ function logCard(l) {
 function fieldInput(f, vals, onChange, fields) {
   const changed = r => onChange && onChange(r);
   const dep = (fields || []).some(x => x.showIf && x.showIf.key === f.key);
+  if (f.type === "Calc") { const d = el("div", { class: "calcval" }); d._upd = () => { computeCalc([f], vals); d.textContent = calcText(f, vals) }; d._upd(); return d }
   if (f.type === "Batch") {
     const sel = el("select", {}, el("option", { value: "", text: "Pick a batch…" }), ...batchList(f).map(b => el("option", { value: b.sampleId, selected: vals[f.key] === b.sampleId, text: batchLabel(b) })));
     if (!batchList(f).length) sel.append(el("option", { value: "", disabled: true, text: "No batches logged yet" }));
@@ -653,14 +667,14 @@ function editSample(s) {
   const dt = dateInput(dmy(s.created));
   const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), locLbl, locBox, el("label", { text: "Status" }), status);
   if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
-    const fb = el("div", { class: "stack" }); const drawF = () => fb.replaceChildren(...fields.filter(f => shown(f, vals)).flatMap(f => [el("label", { text: f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : "") }), fieldInput(f, vals, r => { if (r) drawF() }, fields), f.type === "Batch" && vals[f.key] ? batchCard(vals[f.key], s.id) : null].filter(Boolean))); drawF(); body.append(fb) }
+    const fb = el("div", { class: "stack" }); const drawF = () => fb.replaceChildren(...fields.filter(f => shown(f, vals)).flatMap(f => [el("label", { text: f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : "") }), fieldInput(f, vals, r => { if (r) drawF(); else fb.querySelectorAll(".calcval").forEach(d => d._upd()) }, fields), f.type === "Batch" && vals[f.key] ? batchCard(vals[f.key], s.id) : null].filter(Boolean))); drawF(); body.append(fb) }
   body.append(el("label", { text: "Notes" }), notes,
     el("button", { class: "primary", type: "button", text: "Save changes", onclick: async () => {
       const nid = sid.value.trim(); if (!nid) return toast("The sample needs an ID", true);
       if (nid !== s.sampleId && sampleBy(nid)) return toast(nid + " already exists", true);
-      const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
+      const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true); computeCalc(fields, vals);
       for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
-      const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (shown(f, vals) && v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v });
+      const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (shown(f, vals) && v != null && v !== "") clean[f.key] = (f.type === "Number" || f.type === "Calc") ? num(v) : v });
       if (nid !== s.sampleId) D().log.forEach(l => { if (l.sampleId === s.sampleId) { l.sampleId = nid; l.updated = Date.now() } });
       Object.assign(s, { sampleId: nid, created: dmy(day.getTime()) === dmy(s.created) ? s.created : onDay(day, s.created), logged: s.logged || s.created, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
       await persist(); closeSheet(); render(); toast("Saved " + nid) } }),
@@ -780,7 +794,7 @@ const PAL = ["#22c55e", "#60a5fa", "#f5b642", "#f472b6", "#a78bfa", "#2dd4bf", "
 function protoVars(pr) {
   const used = new Set(); D().samples.forEach(s => { if (!s.deleted && s.protocolId === pr.id) Object.keys(s.values || {}).forEach(k => used.add(k)) });
   const fields = pr.fields.filter(f => !f.off || used.has(f.key)).sort((a, b) => a.step - b.step); const v = [];
-  fields.forEach(f => { if (f.type === "Number") v.push({ key: f.key, label: f.label + (f.unit ? " (" + f.unit + ")" : ""), kind: "num" }); else v.push({ key: f.key, label: f.label, kind: "cat", order: f.options || [] }) });
+  fields.forEach(f => { if (f.type === "Number" || f.type === "Calc") v.push({ key: f.key, label: f.label + (f.unit ? " (" + f.unit + ")" : ""), kind: "num" }); else v.push({ key: f.key, label: f.label, kind: "cat", order: f.options || [] }) });
   const lbl = fields.map(f => f.label.trim().toLowerCase());
   if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
   if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (kPa)", kind: "num" });
@@ -941,7 +955,7 @@ VIEWS.run = (view, { id }) => {
   top.append(el("label", { text: p.idPrefix ? "BATCH ID" : "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), locLbl, loc);
   view.append(top);
   const form = el("div", { class: "card" }); const derived = el("div", { class: "derived" });
-  const recalc = () => { derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
+  const recalc = () => { computeCalc(fields, vals); form.querySelectorAll(".calcval").forEach(d => d._upd()); derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
   const drawForm = () => { form.replaceChildren();
     fields.filter(f => shown(f, vals)).forEach(f => {
       const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", {}, f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : ""), f.required ? el("span", { class: "req", text: " *" }) : null), el("small", { text: f.section || "" })));
@@ -956,7 +970,7 @@ VIEWS.run = (view, { id }) => {
   const save = el("button", { class: "primary", type: "button" }); const label = () => save.textContent = "Save " + (sid.value.trim() || "sample"); label(); sid.addEventListener("input", label);
   save.onclick = async () => {
     const s = sid.value.trim(); if (!s) return toast("Give the sample an ID first", true);
-    const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true);
+    const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true); computeCalc(fields, vals);
     if (day.getTime() > Date.now()) return toast("That date is in the future", true);
     const missing = fields.filter(f => shown(f, vals) && f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
@@ -964,7 +978,7 @@ VIEWS.run = (view, { id }) => {
     const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("Fly ash and carbon add up to " + +sum.toFixed(2) + "% of the solids, not 100%.", true);
     { const sp = solidsPct(fields, vals); if (sp._auto) vals[sp._auto] = String(+sp[sp._auto].toFixed(4)) }
     save.disabled = true; save.textContent = "Saving…";
-    const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
+    const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = (f.type === "Number" || f.type === "Calc") ? num(vals[f.key]) : vals[f.key] });
     D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
     if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx } K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });

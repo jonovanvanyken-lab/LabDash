@@ -186,3 +186,5 @@ input[type=search]:focus,input[type=url]:focus{border-color:var(--green);box-sha
 .traygrid{display:grid;grid-template-columns:18px repeat(6,1fr);gap:6px;align-items:center;text-align:center}
 .traygrid .cell{display:block;aspect-ratio:1;border-radius:50%;border:1px dashed var(--line);font-size:12px;font-weight:700;padding:0}
 .traygrid .cell.full{border:1px solid var(--green);background:var(--green-soft);color:var(--green-h)}
+
+.calcval{background:var(--green-soft);color:var(--green-h);border-radius:12px;padding:13px 14px;font-weight:700;font-size:15px}
