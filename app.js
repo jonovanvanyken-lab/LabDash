@@ -7,7 +7,7 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.12";
+const APP_VERSION = "1.13";
 const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
@@ -219,6 +219,12 @@ function migrate() {
   }
   if (!st.mixV1) { addMixProtocol(); st.mixV1 = true; changed = true }
   if (linkPellets()) changed = true;
+  if (!st.mixV2) { D().protocols.forEach(p => { if (p.kind !== "fjhmix") return; p.fields.forEach(f => {
+      if (f.key === "fa_pct") { f.pctOf = "dry"; f.hint = "% of the solids (fly ash + carbon). Leave blank to use 100 − carbon" }
+      if (f.key === "carbon_pct") { f.pctOf = "dry"; f.hint = "% of the solids (fly ash + carbon)" }
+      if (f.key === "water_pct") f.hint = "% of the total mass" });
+    p.description = "Make a fly ash and carbon mixture. Water is a % of the total mass; fly ash and carbon are % of the solids. The app works out the grams. Gives the mixture a batch ID that pellets can be linked to."; p.updated = Date.now() });
+    st.mixV2 = true; changed = true }
   return changed;
 }
 function addMixProtocol() {
@@ -230,13 +236,13 @@ function addMixProtocol() {
     const F = (key, step, section, label, type, unit, extra) => Object.assign({ key, step, section, label, type, unit: unit || "", options: [], required: false, keep: false, hint: "" }, extra || {});
     const dry = (n, s0, cond) => [F("dry" + n + "_method", s0, "Drying stage " + n, "Stage " + n + " drying", "Choice", "", { options: ["Oven", "Air"], keep: true, ...cond }), F("dry" + n + "_temp", s0 + 1, "Drying stage " + n, "Stage " + n + " temperature", "Number", "°C", { keep: true, ...cond }), F("dry" + n + "_time", s0 + 2, "Drying stage " + n, "Stage " + n + " time", "Number", "h", { keep: true, ...cond })];
     const c2 = { showIf: { key: "dry2", equals: "Second drying stage" } };
-    mix = { id: uid("r"), kind: "fjhmix", idPrefix: "MIX", name: "FJH mixture preparation", projectId: pj, description: "Make a fly ash and carbon mixture. Percentages are of the total mass, water included; the app works out the grams. Gives the mixture a batch ID that pellets can be linked to.", docLink: "", updated: Date.now(),
+    mix = { id: uid("r"), kind: "fjhmix", idPrefix: "MIX", name: "FJH mixture preparation", projectId: pj, description: "Make a fly ash and carbon mixture. Water is a % of the total mass; fly ash and carbon are % of the solids. The app works out the grams. Gives the mixture a batch ID that pellets can be linked to.", docLink: "", updated: Date.now(),
       fields: [F("total_mass", 1, "Mixture", "Total mass", "Number", "g", { required: true, role: "total", hint: "Everything in the mix, water included" }),
-        F("fa_pct", 2, "Mixture", "Fly ash", "Number", "%", { pctOf: "total_mass" }),
+        F("fa_pct", 2, "Mixture", "Fly ash", "Number", "%", { pctOf: "dry", hint: "% of the solids (fly ash + carbon). Leave blank to use 100 − carbon" }),
         F("carbon_type", 3, "Mixture", "Carbon type", "Choice", "", { options: ["Coke", "Graphite"] }),
-        F("carbon_pct", 4, "Mixture", "Carbon", "Number", "%", { pctOf: "total_mass" }),
+        F("carbon_pct", 4, "Mixture", "Carbon", "Number", "%", { pctOf: "dry", hint: "% of the solids (fly ash + carbon)" }),
         F("carbon_size", 5, "Mixture", "Carbon particle size", "Choice", "µm", { options: sizeOpts }),
-        F("water_pct", 6, "Mixture", "Water", "Number", "%", { pctOf: "total_mass" }),
+        F("water_pct", 6, "Mixture", "Water", "Number", "%", { pctOf: "total_mass", hint: "% of the total mass" }),
         F("pellets_made", 7, "Pellets", "Pellets made", "Number", ""),
         ...dry(1, 8, {}),
         F("dry2", 11, "Drying stage 1", "Second drying stage", "Check", "", { options: ["Second drying stage"] }),
@@ -297,12 +303,28 @@ function derivedFor(fields, values) {
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const out = [];
   if (m > 0 && d > 0 && h > 0) out.push(["Density", (m / (Math.PI * (d / 20) ** 2 * (h / 10))).toFixed(2) + " g/cm³"]);
   if (d > 0 && f > 0) out.push(["Strength (F/A)", (1000 * f / (Math.PI * (d / 2) ** 2)).toFixed(0) + " kPa"]);
-  const tot = fields.find(x => x.role === "total"), ps = fields.filter(x => x.pctOf); const T = tot ? num(values[tot.key]) : NaN;
-  if (T > 0) ps.forEach(x => { const q = num(values[x.key]); if (q >= 0) out.push([x.label, (T * q / 100).toFixed(2) + " g"]) });
-  const sum = pctSum(fields, values); if (sum != null && Math.abs(sum - 100) > 0.01) out.push(["⚠ Adds up to", +sum.toFixed(2) + "% (should be 100%)"]);
+  const g = mixGrams(fields, values); g.forEach(([k, v]) => out.push([k, v.toFixed(2) + " g"]));
+  const sum = pctSum(fields, values); if (sum != null && Math.abs(sum - 100) > 0.01) out.push(["⚠ Fly ash + carbon =", +sum.toFixed(2) + "% of solids (should be 100%)"]);
   return out;
 }
-function pctSum(fields, values) { const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
+/* water (and anything else "% of total") comes off the total first; fly ash + carbon split what's left.
+   One blank solids % is taken as the remainder, e.g. 50% carbon → 50% fly ash. */
+function solidsPct(fields, values) {
+  const ds = fields.filter(x => x.pctOf === "dry"); const filled = ds.filter(x => values[x.key] !== "" && values[x.key] != null);
+  const out = Object.fromEntries(filled.map(x => [x.key, num(values[x.key]) || 0]));
+  if (ds.length - filled.length === 1 && filled.length) { const rest = ds.find(x => !(x.key in out)); out[rest.key] = 100 - filled.reduce((a, x) => a + out[x.key], 0); out._auto = rest.key }
+  return out;
+}
+function mixGrams(fields, values) {
+  const tot = fields.find(x => x.role === "total"); const T = tot ? num(values[tot.key]) : NaN; if (!(T > 0)) return [];
+  const out = []; let off = 0;
+  fields.filter(x => x.pctOf && x.pctOf !== "dry").forEach(x => { const q = num(values[x.key]); if (q >= 0) { off += T * q / 100; out.push([x.label, T * q / 100]) } });
+  const sp = solidsPct(fields, values); const dry = T - off;
+  fields.filter(x => x.pctOf === "dry" && x.key in sp).forEach(x => out.splice(out.length - 1 < 0 ? 0 : out.length, 0, [x.label + (sp._auto === x.key ? " (" + +sp[x.key].toFixed(2) + "%)" : ""), dry * sp[x.key] / 100]));
+  return out.sort((a, b) => fields.findIndex(f => a[0].startsWith(f.label)) - fields.findIndex(f => b[0].startsWith(f.label)));
+}
+function pctSum(fields, values) { const ds = fields.filter(x => x.pctOf === "dry"); if (ds.length) { const sp = solidsPct(fields, values); const ks = ds.filter(x => x.key in sp); return ks.length ? ks.reduce((a, x) => a + sp[x.key], 0) : null }
+  const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
 /* fields that only show when another field has a given value (e.g. stage 2 drying) */
 const checkLabel = f => (f.options && f.options[0]) || "Done";
 const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
@@ -939,7 +961,8 @@ VIEWS.run = (view, { id }) => {
     const missing = fields.filter(f => shown(f, vals) && f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
     for (const f of fields) if (shown(f, vals) && f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
-    const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("The percentages add up to " + +sum.toFixed(2) + "%, not 100%.", true);
+    const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("Fly ash and carbon add up to " + +sum.toFixed(2) + "% of the solids, not 100%.", true);
+    { const sp = solidsPct(fields, vals); if (sp._auto) vals[sp._auto] = String(+sp[sp._auto].toFixed(4)) }
     save.disabled = true; save.textContent = "Saving…";
     const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = f.type === "Number" ? num(vals[f.key]) : vals[f.key] });
     D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
