@@ -258,12 +258,22 @@ def write_workbook(docs, path):
     fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=path.parent)
     os.close(fd)
     wb.save(tmp)
+    latest = path.with_name(path.stem + " (latest).xlsx")
     try:
         os.replace(tmp, path)
+        try:
+            latest.unlink()  # the main file is up to date again, so the stand-in copy isn't needed
+        except OSError:
+            pass
         return True
     except PermissionError:
-        os.remove(tmp)
-        log("LabDash-data.xlsx is open in Excel, so it wasn't updated this time. Close it and the next sync will update it.")
+        # the main file is open in Excel: put the up-to-date version next to it instead of skipping
+        try:
+            os.replace(tmp, latest)
+            log(f"LabDash-data.xlsx is open in Excel, so the up-to-date version was saved as {latest.name}. Close Excel and the next sync updates the main file.")
+        except PermissionError:
+            os.remove(tmp)
+            log("LabDash-data.xlsx and its (latest) copy are both open in Excel, so nothing was updated this time.")
         return False
 
 
@@ -276,7 +286,7 @@ class RunLock:
     def __enter__(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            if self.path.exists() and time.time() - self.path.stat().st_mtime > 600:
+            if self.path.exists() and time.time() - self.path.stat().st_mtime > 300:
                 self.path.unlink()  # left behind by a sync that crashed
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode())
