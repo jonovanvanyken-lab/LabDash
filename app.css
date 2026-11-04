@@ -188,3 +188,19 @@ input[type=search]:focus,input[type=url]:focus{border-color:var(--green);box-sha
 .traygrid .cell.full{border:1px solid var(--green);background:var(--green-soft);color:var(--green-h)}
 
 .calcval{background:var(--green-soft);color:var(--green-h);border-radius:12px;padding:13px 14px;font-weight:700;font-size:15px}
+
+/* v1.15: batch spots, box map, changed-from-batch */
+.chips.wrap{flex-wrap:wrap;overflow:visible}
+.traygrid button.cell{background:none;color:var(--ink);cursor:pointer}
+.traygrid .cell.full{border:1.5px solid var(--bc,var(--green));background:color-mix(in srgb,var(--bc,var(--green)) 24%,transparent);color:var(--ink)}
+.traygrid .cell.res{border:1.5px dashed var(--bc,var(--green));background:color-mix(in srgb,var(--bc,var(--green)) 10%,transparent)}
+.traygrid .cell.pick{border:2px solid var(--green);background:var(--green-soft)}
+.traygrid .cell.clash{border:2px solid var(--red)!important;box-shadow:0 0 0 2px rgba(248,113,113,.25)}
+.traygrid .cell.start{box-shadow:0 0 0 3px rgba(34,197,94,.45)}
+.field.changed{box-shadow:inset 3px 0 0 var(--amber);padding-left:10px;margin-left:-10px}
+.chg-t{color:var(--amber)!important}
+.kv.changed span:first-child small{font-size:12px;font-weight:600}
+.link.inl{padding:0;font-size:12px;color:var(--amber)}
+.pcalc{font-size:13px;font-weight:700;color:var(--green-h)}
+.pcalc:empty{display:none}
+.link-plain{background:none;border:0;color:inherit;padding:2px 0;font:inherit;font-size:13px}

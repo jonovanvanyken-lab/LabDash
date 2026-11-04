@@ -157,6 +157,39 @@ def derived(fields, values):
     return dens, stren
 
 
+def comp_field(fields):
+    """The compaction force field (in N), if the protocol has one."""
+    import re
+    for f in fields:
+        if re.search(r"compaction|pelleti|press", f.get("label", ""), re.I) and str(f.get("unit", "")).strip() == "N":
+            return f
+    return None
+
+
+def pressure(fields, values):
+    """Compaction pressure in MPa: force (N) over the pellet face (mm²)."""
+    import math
+    cf = comp_field(fields)
+    df = next((f for f in fields if f["label"].strip().lower() == "diameter"), None)
+    try:
+        F = float(str(values.get(cf["key"], "")).replace(",", ".")) if cf else None
+        d = float(str(values.get(df["key"], "")).replace(",", ".")) if df else None
+    except ValueError:
+        return None
+    return round(F / (math.pi * (d / 2) ** 2), 2) if F and d else None
+
+
+def removed_text(s):
+    """Why a sample (or a batch's unlogged spots) left the box, for the Removed column."""
+    parts = []
+    r = s.get("removed")
+    if r:
+        parts.append(" · ".join(x for x in [r.get("reason", ""), made_day(r.get("at")).strftime("%d/%m/%Y") if r.get("at") else "", ("was in " + r["from"]) if r.get("from") else ""] if x))
+    for slot, g in sorted((s.get("gone") or {}).items()):
+        parts.append(slot.split(" · ")[-1] + " " + (g.get("reason") or "emptied"))
+    return "; ".join(parts)
+
+
 def clean_cell(x):
     """Excel can't hold some invisible control characters or nested values; tidy them instead of failing."""
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
@@ -225,23 +258,39 @@ def write_workbook(docs, path):
           [[when(l.get("when")), pname(l.get("projectId")), l.get("title", ""), l.get("note", ""), l.get("sampleId", ""), len(l.get("photos") or [])]
            for l in sorted(docs.get("log", []), key=lambda l: -(l.get("when") or 0)) if not l.get("deleted")])
     samples = sorted([s for s in docs.get("samples", []) if not s.get("deleted")], key=lambda s: s.get("created") or 0)
-    sheet("Samples", ["SampleID", "Project", "Protocol", "Date", "Location", "Status", "Notes"],
+    sheet("Samples", ["SampleID", "Project", "Protocol", "Date", "Location", "Status", "Removed", "Notes"],
           [[s["sampleId"], pname(s.get("projectId")), (protos.get(s.get("protocolId")) or {}).get("name", s.get("protocolName", "")), made_day(s.get("created")),
-            s.get("location", ""), s.get("status", ""), s.get("notes", "")] for s in samples])
+            s.get("location", ""), s.get("status", ""), removed_text(s), s.get("notes", "")] for s in samples])
     for pr in protos.values():
       try:
         used = {k for s in samples if s.get("protocolId") == pr["id"] for k in (s.get("values") or {})}
         # fields removed in the app are left out unless a sample already holds a value for them
         fields = sorted([f for f in pr.get("fields", []) if not f.get("off") or f["key"] in used], key=lambda f: f.get("step") or 0)
-        rows = []
+        rows, changed = [], []
+        # pellets linked to a mixture batch: flag values changed from what the batch gave them
+        has_batch = any(f.get("type") == "Batch" for f in pr.get("fields", []))
+        has_press = comp_field(fields) is not None and any(f["label"].strip().lower() == "diameter" for f in fields)
+        label = {f["key"]: f["label"] for f in fields}
         for s in samples:
             if s.get("protocolId") != pr["id"]:
                 continue
             v = s.get("values") or {}
             dens, stren = derived(fields, v)
-            rows.append([s["sampleId"], made_day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + [dens, stren, s.get("notes", "")])
-        header = ["SampleID", "Date", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields] + ["Density (g/cm³)", "Strength F/A (kPa)", "Notes"]
-        sheet(pr["name"], header, rows)
+            diff = s.get("batchDiff") or {}
+            extra = [pressure(fields, v)] if has_press else []
+            flag = ["; ".join(f"{label.get(k, k)}: {v.get(k, '') if v.get(k) is not None else ''} (batch {b if b != '' else 'blank'})" for k, b in diff.items())] if has_batch else []
+            rows.append([s["sampleId"], made_day(s.get("created")), s.get("location", "")] + [v.get(f["key"]) for f in fields] + extra + [dens, stren] + flag + [s.get("notes", "")])
+            changed.append([i for i, f in enumerate(fields) if f["key"] in diff])
+        header = (["SampleID", "Date", "Location"] + [f["label"] + (f" ({f['unit']})" if f.get("unit") else "") for f in fields]
+                  + (["Compaction pressure (MPa)"] if has_press else []) + ["Density (g/cm³)", "Strength F/A (kPa)"]
+                  + (["Changed from batch"] if has_batch else []) + ["Notes"])
+        ws = sheet(pr["name"], header, rows)
+        if any(changed):
+            from openpyxl.styles import PatternFill
+            amber = PatternFill("solid", fgColor="FDE68A")
+            for r, cols in enumerate(changed, start=2):
+                for i in cols:
+                    ws.cell(row=r, column=4 + i).fill = amber
       except Exception as e:  # one odd protocol shouldn't stop the whole workbook
         log(f"Skipped the sheet for protocol {pr.get('name')!r}: {e!r}")
     sheet("Links", ["Project", "Name", "Link", "Added"],

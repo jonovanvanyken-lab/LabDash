@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.14";
-const WHATS_NEW = "Settings → Reset a project's samples · imports can update a project without overwriting it";
+const APP_VERSION = "1.15";
+const WHATS_NEW = "Batches keep a run of box spots · pellets fill from their batch and flag changes · box map with mark-empty · compaction pressure";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -168,40 +168,142 @@ const locs = () => D().locations.filter(l => !l.deleted);
 const trays = () => locs().filter(l => l.tray);
 const slotName = (t, r, c) => t + " · " + r + c;
 function parseSlot(str) { const m = String(str || "").match(/^(.+) · ([A-D])([1-6])$/); return m && trays().some(t => t.name === m[1]) ? { tray: m[1], row: m[2], col: +m[3] } : null }
-const holder = (str, exceptId) => D().samples.find(x => !x.deleted && x.id !== exceptId && x.location === str);
+const allSlots = t => ROWS.flatMap(r => COLS.map(c => slotName(t, r, c)));
+const shortNum = s => String(s.sampleId || "").replace(/^.*-0*/, "") || "•";
+/* ---------- batch spots ----------
+   A mixture batch reserves a run of tray spots for its pellets (b.slots). A reserved spot stays taken until a pellet
+   is logged into it (pellet.batchSlot), it is marked empty (b.gone[slot] = {reason, at}), or the batch is finished. */
+const pelletProto = () => D().protocols.find(p => !p.deleted && /pellet/i.test(p.name) && (p.fields || []).some(f => /breaking force/i.test(f.label)));
+const isBatch = s => !!s && !!(prot(s.protocolId) || {}).idPrefix;
+const pelletsOf = b => D().samples.filter(x => !x.deleted && x.id !== b.id && Object.values(x.values || {}).includes(b.sampleId));
+function batchStats(b) {
+  const pm = num((b.values || {}).pellets_made); const made = pm > 0 ? Math.round(pm) : (b.slots || []).length;
+  const logged = pelletsOf(b).length, lost = Object.keys(b.gone || {}).length;
+  return { made, logged, lost, done: made > 0 && logged + lost >= made };
+}
+function progressText(b) { const st = batchStats(b); if (!st.made) return st.logged ? st.logged + " logged" : ""; return st.logged + "/" + st.made + " logged" + (st.lost ? " · " + st.lost + " lost" : "") }
+function reservedFree(b) {
+  if (!(b.slots || []).length || batchStats(b).done) return [];
+  const used = new Set(pelletsOf(b).map(p => p.batchSlot).filter(Boolean)); return b.slots.filter(sl => !used.has(sl) && !(b.gone || {})[sl]);
+}
+/* the batch a pellet was made from */
+function batchOf(s) { const pr = prot(s.protocolId); const f = pr && (pr.fields || []).find(x => x.type === "Batch"); const v = f && (s.values || {})[f.key]; return v ? sampleBy(v) : null }
+function batchColour(b) { const all = D().samples.filter(x => !x.deleted && (x.slots || []).length).sort((a, z) => a.created - z.created); const i = all.findIndex(x => x.id === b.id); return PAL[(i < 0 ? 0 : i) % PAL.length] }
+/* who is in each tray spot: Map(slot → { s, reserved }). exceptId: a sample to leave out. okBatch: a batch whose reserved spots count as free */
+function occupancy(exceptId, okBatch) {
+  const m = new Map();
+  D().samples.forEach(x => { if (!x.deleted && x.id !== exceptId && parseSlot(x.location) && !m.has(x.location)) m.set(x.location, { s: x }) });
+  D().samples.forEach(b => { if (b.deleted || b.id === exceptId || !(b.slots || []).length || b.sampleId === okBatch) return; reservedFree(b).forEach(sl => { if (!m.has(sl)) m.set(sl, { s: b, reserved: true }) }) });
+  return m;
+}
+const holder = (str, exceptId, okBatch) => { const o = occupancy(exceptId, okBatch).get(str); return o ? o.s : undefined };
 /* next free slot after `str`, along the row, then the next row, then the next tray */
-function nextSlot(str, exceptId) {
-  const all = trays().flatMap(t => ROWS.flatMap(r => COLS.map(c => slotName(t.name, r, c))));
+function nextSlot(str, exceptId, okBatch) {
+  const all = trays().flatMap(t => allSlots(t.name)); const occ = occupancy(exceptId, okBatch);
   const i = all.indexOf(str); if (i < 0) return "";
-  for (let j = i + 1; j < all.length; j++) if (!holder(all[j], exceptId)) return all[j];
+  for (let j = i + 1; j < all.length; j++) if (!occ.has(all[j])) return all[j];
   return "";
 }
+/* n spots from `start`, along the row then onto the next row of the same tray */
+function rangeFrom(start, n) { const p = parseSlot(start); if (!p || !(n > 0)) return { slots: [], over: 0, left: 0 }; const all = allSlots(p.tray); const i = all.indexOf(start); const slots = all.slice(i, i + n); return { slots, over: n - slots.length, left: all.length - i } }
+function rangeLabel(slots) { if (!slots.length) return ""; if (slots.length === 1) return slots[0]; const a = parseSlot(slots[0]), z = parseSlot(slots[slots.length - 1]); return a.tray + " · " + a.row + a.col + "–" + z.row + z.col }
 function trayDot(t) { return el("span", { class: "tdot", style: "background:" + (t.colour || "#888") }) }
 /* tap a tray, then a row, then a column; or tap a plain place. onPick(locationString) */
-function locationPicker(current, onPick, exceptId) {
+function locationPicker(current, onPick, exceptId, okBatch) {
   const box = el("div", { class: "stack" }); let tray = (parseSlot(current) || {}).tray || "", row = "";
   const draw = () => {
-    box.replaceChildren();
+    box.replaceChildren(); const occ = occupancy(exceptId, okBatch);
     const top = el("div", { class: "chips" });
     trays().forEach(t => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(tray === t.name) }, trayDot(t), t.name); c.onclick = () => { tray = tray === t.name ? "" : t.name; row = ""; draw() }; top.append(c) });
     locs().filter(l => !l.tray).forEach(L => { const c = el("button", { class: "chip", type: "button", "aria-pressed": String(current === L.name), text: L.name }); c.onclick = () => { tray = ""; onPick(current === L.name ? "" : L.name) }; top.append(c) });
     box.append(top);
     if (!tray) return;
     const rs = el("div", { class: "chips" }, el("span", { class: "fine", text: "Row" }));
-    ROWS.forEach(r => { const free = COLS.filter(c => !holder(slotName(tray, r, c), exceptId)).length; const c = el("button", { class: "chip", type: "button", "aria-pressed": String(row === r), text: r + (free ? "" : " · full") }); c.onclick = () => { row = r; draw() }; rs.append(c) });
+    ROWS.forEach(r => { const free = COLS.filter(c => !occ.has(slotName(tray, r, c))).length; const c = el("button", { class: "chip", type: "button", "aria-pressed": String(row === r), text: r + (free ? "" : " · full") }); c.onclick = () => { row = r; draw() }; rs.append(c) });
     box.append(rs);
     if (!row) return;
     const cs = el("div", { class: "chips" }, el("span", { class: "fine", text: "Column" }));
-    COLS.forEach(n => { const name = slotName(tray, row, n), h = holder(name, exceptId); const c = el("button", { class: "chip" + (h ? " taken" : ""), type: "button", "aria-pressed": String(current === name), text: String(n) }); c.onclick = () => { if (h) toast(name + " already holds " + h.sampleId + ". Saved there anyway.", true); onPick(name) }; cs.append(c) });
+    COLS.forEach(n => { const name = slotName(tray, row, n), h = (occ.get(name) || {}).s; const c = el("button", { class: "chip" + (h ? " taken" : ""), type: "button", "aria-pressed": String(current === name), text: String(n) }); c.onclick = () => { if (h) toast(name + " already holds " + h.sampleId + ". Saved there anyway.", true); onPick(name) }; cs.append(c) });
     box.append(cs);
   };
   draw(); return box;
 }
-/* tray map: 4 × 6 grid showing which sample sits where */
-function trayMap(t) {
+/* tray map: 4 × 6 grid. Logged pellets show their number; spots still reserved by a batch are dashed in the batch colour.
+   o.onCell(slot, occupant) replaces the default (open the spot); o.range / o.start highlight a run being picked */
+function trayGrid(t, o = {}) {
+  const occ = o.occ || occupancy(o.exceptId, o.okBatch);
   const g = el("div", { class: "traygrid" }, el("span", {}), ...COLS.map(c => el("span", { class: "fine", text: String(c) })));
-  ROWS.forEach(r => { g.append(el("span", { class: "fine", text: r })); COLS.forEach(c => { const h = holder(slotName(t.name, r, c)); g.append(h ? el("button", { class: "cell full", type: "button", text: h.sampleId.replace(/^.*-0*/, ""), title: h.sampleId, onclick: () => { closeSheet(); go("sample", { id: h.id }) } }) : el("span", { class: "cell" })) }) });
+  ROWS.forEach(r => { g.append(el("span", { class: "fine", text: r })); COLS.forEach(c => {
+    const sl = slotName(t.name, r, c), h = occ.get(sl), inR = o.range && o.range.has(sl);
+    const b = h ? (h.reserved ? h.s : batchOf(h.s)) : null;
+    const cls = "cell" + (h ? (h.reserved ? " res" : " full") : "") + (inR ? (h ? " clash" : " pick") : "") + (o.start === sl ? " start" : "");
+    const what = h ? (h.reserved ? "kept for a pellet from " + h.s.sampleId : h.s.sampleId) : "empty";
+    const btn = el("button", { class: cls, type: "button", style: b ? "--bc:" + batchColour(b) : null, text: h && !h.reserved ? shortNum(h.s) : "", title: r + c + ": " + what, "aria-label": r + c + ", " + what });
+    btn.onclick = () => o.onCell ? o.onCell(sl, h) : spotSheet(sl, h, o.after);
+    g.append(btn) }) });
   return g;
+}
+function trayLegend(t, occ) {
+  const bs = new Map(); occ.forEach((h, sl) => { if ((parseSlot(sl) || {}).tray !== t.name) return; const b = h.reserved ? h.s : batchOf(h.s); if (b) bs.set(b.id, b) });
+  if (!bs.size) return null;
+  return el("div", { class: "legend" }, ...[...bs.values()].map(b => el("button", { class: "lg link-plain", type: "button", onclick: () => go("sample", { id: b.id }) }, el("span", { class: "dot", style: "background:" + batchColour(b) }), b.sampleId + " · " + progressText(b))));
+}
+/* why a spot is being emptied: the pellet condition options already in the protocol, plus Used up and Lost */
+function emptyReasons() {
+  const f = D().protocols.filter(p => !p.deleted).flatMap(p => p.fields || []).find(x => x.type === "Choice" && (x.options || []).some(o => /crumbl/i.test(o)));
+  const o = (f ? f.options : ["Crumbled", "Split", "Chipped", "Destroyed"]).filter(x => !/^(intact|none|ok|good|whole|fine|no damage|undamaged|n\/?a|used up)$/i.test(String(x).trim()));
+  return ["Used up", ...o, ...(o.some(x => /^lost$/i.test(x)) ? [] : ["Lost"])];
+}
+function reasonChips(onPick) { const c = el("div", { class: "chips wrap" }); emptyReasons().forEach(r => c.append(el("button", { class: "chip", type: "button", text: r, onclick: () => onPick(r) }))); return c }
+/* empty a logged sample's spot; the reason stays on its record */
+function removeSample(s, reason) {
+  s.removed = { reason, at: Date.now(), from: s.location, status: s.status || "" };
+  s.status = reason; s.location = reason === "Used up" && locs().some(l => l.name === "Used up") ? "Used up" : ""; s.updated = Date.now();
+}
+function putBack(s) { const r = s.removed || {}; if (r.from && parseSlot(r.from) && holder(r.from, s.id)) return toast(r.from + " is in use now. Pick a spot from Edit.", true) || false; s.location = r.from || ""; s.status = r.status || "Made"; delete s.removed; s.updated = Date.now(); return true }
+/* tap a spot: see what's there, open it, or mark it empty */
+function spotSheet(sl, h, after) {
+  const body = el("div", { class: "stack" }); const fin = async msg => { await persist(); closeSheet(); toast(msg); (after || render)() };
+  if (!h) body.append(el("p", { class: "muted", text: "Nothing is stored here." }));
+  else if (h.reserved) { const b = h.s;
+    body.append(el("p", { class: "small", text: "Kept for a pellet from " + b.sampleId + " that hasn't been logged yet." }),
+      el("button", { class: "ghost", type: "button", text: "Open batch " + b.sampleId, onclick: () => { closeSheet(); go("sample", { id: b.id }) } }),
+      el("label", { text: "Mark this spot empty. Why?" }), reasonChips(async r => { b.gone = Object.assign({}, b.gone, { [sl]: { reason: r, at: Date.now() } }); b.updated = Date.now(); await fin(sl + " marked empty · " + r) }));
+  } else { const s = h.s, b = batchOf(s);
+    body.append(el("p", { class: "small", text: s.sampleId + (b ? " · from " + b.sampleId : "") + (s.status ? " · " + s.status : "") }),
+      el("button", { class: "ghost", type: "button", text: "Open " + s.sampleId, onclick: () => { closeSheet(); go("sample", { id: s.id }) } }),
+      el("label", { text: "Mark this spot empty. Why?" }), reasonChips(async r => { removeSample(s, r); await fin(s.sampleId + " removed · " + r) }));
+  }
+  body.append(el("button", { class: "link", type: "button", text: "Close", onclick: closeSheet }));
+  sheet(sl, body);
+}
+/* mixture batches: pick a tray, tap the first spot, and the pellet count sets how many spots are kept.
+   st.loc holds the first spot (or a plain place). getN() returns the pellet count. */
+function rangePicker(st, getN, exceptId) {
+  const box = el("div", { class: "stack" }); let tray = (parseSlot(st.loc) || {}).tray || "";
+  const info = () => {
+    const n = Math.round(num(getN())), p = parseSlot(st.loc);
+    if (!p) return { n, slots: [], over: 0, clashes: [], label: st.loc || "" };
+    const r = rangeFrom(st.loc, n > 0 ? n : 1), occ = occupancy(exceptId);
+    return { n, ...r, clashes: r.slots.filter(sl => occ.has(sl)).map(sl => [sl, occ.get(sl).s.sampleId]), label: rangeLabel(r.slots) };
+  };
+  const draw = () => {
+    box.replaceChildren(); const I = info();
+    const top = el("div", { class: "chips" });
+    trays().forEach(t => top.append(el("button", { class: "chip", type: "button", "aria-pressed": String(tray === t.name), onclick: () => { tray = tray === t.name ? "" : t.name; if ((parseSlot(st.loc) || {}).tray !== tray) st.loc = ""; draw() } }, trayDot(t), t.name)));
+    locs().filter(l => !l.tray && l.name !== "Used up").forEach(L => top.append(el("button", { class: "chip", type: "button", "aria-pressed": String(st.loc === L.name), text: L.name, onclick: () => { tray = ""; st.loc = st.loc === L.name ? "" : L.name; draw() } })));
+    box.append(top);
+    const t = trays().find(x => x.name === tray);
+    if (t) box.append(trayGrid(t, { occ: occupancy(exceptId), range: new Set(I.slots), start: st.loc, onCell: sl => { st.loc = st.loc === sl ? "" : sl; draw() } }));
+    const say = (cls, text) => box.append(el("p", { class: "fine " + cls, text }));
+    if (!st.loc) say("", t ? "Tap the spot for the first pellet. The rest fill along the row, then onto the next row." : "Pick a box, then tap the spot for the first pellet.");
+    else if (!parseSlot(st.loc)) say("green-t", "Stored at " + st.loc);
+    else if (!(I.n > 0)) say("amber-t", "Starts at " + st.loc + ". Enter Pellets made to keep that many spots.");
+    else if (I.over > 0) say("red-t", I.n + " pellets from " + st.loc.split(" · ")[1] + " need " + I.n + " spots, but only " + I.left + " are left in " + tray + " up to D6. Pick an earlier spot or another box.");
+    else { say("green-t", I.label + " · " + I.n + (I.n === 1 ? " spot" : " spots"));
+      if (I.clashes.length) say("amber-t", "Already in use: " + I.clashes.map(([sl, id]) => sl.split(" · ")[1] + " (" + id + ")").join(", ") + ". Saving will ask you to confirm."); }
+  };
+  draw(); box._redraw = draw; box._info = info; return box;
 }
 /* one-off data updates, safe to run on every device */
 function migrate() {
@@ -234,6 +336,11 @@ function migrate() {
       if (f.showIf && f.showIf.key === "dry2") f.showIf = { key: "dry2", equals: NEW } }); p.updated = Date.now();
       D().samples.forEach(x => { if (x.protocolId === p.id && x.values && x.values.dry2 === OLD) { x.values.dry2 = NEW; x.updated = Date.now() } }) });
     st.mixV3 = true; changed = true }
+  /* v1.15: pellets — Replicate removed from the form (values kept), Diameter starts at 10 mm */
+  if (!st.pelletV2) { const pel = pelletProto(); if (pel) { pel.fields.forEach(f => {
+      if (/^replicate$/i.test(f.label.trim()) && !f.off) f.off = true;
+      if (/^diameter$/i.test(f.label.trim()) && f.type === "Number" && f.dflt == null) { f.dflt = "10"; f.hint = f.hint || "10 mm unless you change it" } });
+    pel.updated = Date.now(); st.pelletV2 = true; changed = true } }
   return changed;
 }
 function addMixProtocol() {
@@ -276,7 +383,9 @@ function linkPellets() {
 }
 const liveFields = p => (p.fields || []).filter(f => !f.off);
 /* keep "removed" and "required" choices when a protocol is re-imported */
-function keepFieldChoices(oldF, newF) { const by = Object.fromEntries((oldF || []).map(f => [f.key, f])); newF.forEach(f => { const o = by[f.key]; if (o && o.off) f.off = true; if (o && o.userReq != null) { f.userReq = o.userReq; f.required = o.userReq } }); return newF }
+function keepFieldChoices(oldF, newF) { const by = Object.fromEntries((oldF || []).map(f => [f.key, f])); newF.forEach(f => { const o = by[f.key]; if (o && o.off) f.off = true; if (o && o.userReq != null) { f.userReq = o.userReq; f.required = o.userReq } if (o && o.dflt != null && f.dflt == null) { f.dflt = o.dflt; f.hint = f.hint || o.hint } });
+  /* a re-import rebuilds the field list; keep the mixture batch link */
+  (oldF || []).forEach(o => { if (o.type === "Batch" && !newF.some(f => f.type === "Batch")) newF.push(o) }); return newF }
 const sampleBy = sid => D().samples.find(s => s.sampleId === sid && !s.deleted);
 /* a button that asks for a second tap before it acts */
 function confirmBtn(cls, label, confirmLabel, act) {
@@ -300,16 +409,21 @@ function nextSampleId(projectId, pr) {
   return pre + "-" + String(max + 1).padStart(pr && pr.idPrefix ? 3 : 4, "0");
 }
 function num(v) { if (v == null || v === "") return NaN; return Number(String(v).replace(",", ".")) }
+/* compaction force (N) over the pellet face (mm²) gives N/mm² = MPa */
+const compField = fields => fields.find(f => /compaction|pelleti|press/i.test(f.label) && String(f.unit).trim() === "N");
+function pressureOf(fields, values) { const cf = compField(fields), df = fields.find(f => f.label.trim().toLowerCase() === "diameter"); const F = cf ? num(values[cf.key]) : NaN, d = df ? num(values[df.key]) : NaN; return F > 0 && d > 0 ? F / (Math.PI * (d / 2) ** 2) : NaN }
 function derivedNum(fields, values) {
   const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const o = {};
   if (m > 0 && d > 0 && h > 0) o.density = m / (Math.PI * (d / 20) ** 2 * (h / 10));
   if (d > 0 && f > 0) o.strength = 1000 * f / (Math.PI * (d / 2) ** 2);
+  const pr = pressureOf(fields, values); if (pr > 0) o.pressure = pr;
   return o;
 }
 function derivedFor(fields, values) {
   const by = name => { const f = fields.find(f => f.label.trim().toLowerCase() === name); return f ? num(values[f.key]) : NaN };
   const m = by("mass"), d = by("diameter"), h = by("height"), f = by("breaking force"); const out = [];
+  const pr = pressureOf(fields, values); if (pr > 0) out.push(["Compaction pressure", fmtN(pr) + " MPa"]);
   if (m > 0 && d > 0 && h > 0) out.push(["Density", (m / (Math.PI * (d / 20) ** 2 * (h / 10))).toFixed(2) + " g/cm³"]);
   if (d > 0 && f > 0) out.push(["Strength (F/A)", (1000 * f / (Math.PI * (d / 2) ** 2)).toFixed(0) + " kPa"]);
   const g = mixGrams(fields, values); g.forEach(([k, v]) => out.push([k, v.toFixed(2) + " g"]));
@@ -343,24 +457,31 @@ const checkLabel = f => (f.options && f.options[0]) || "Done";
 const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
 /* batch links: a Batch field lists samples from another protocol and copies their details */
 const batchList = f => D().samples.filter(x => !x.deleted && x.protocolId === f.from).sort((a, b) => b.created - a.created);
-function batchLabel(b) { const v = b.values || {}; return b.sampleId + " · " + [v.carbon_type ? v.carbon_type + (v.carbon_pct != null ? " " + v.carbon_pct + "%" : "") : "no carbon", v.water_pct != null ? v.water_pct + "% water" : ""].filter(Boolean).join(", ") + " · " + dmy(b.created) }
-function applyBatch(f, fields, vals) {
-  const b = D().samples.find(x => !x.deleted && x.sampleId === vals[f.key]); if (!b) return;
-  const src = prot(b.protocolId); const map = f.map || {};
+function batchLabel(b) { const v = b.values || {}; return [b.sampleId, [v.carbon_type ? v.carbon_type + (v.carbon_pct != null ? " " + v.carbon_pct + "%" : "") : "no carbon", v.water_pct != null ? v.water_pct + "% water" : ""].filter(Boolean).join(", "), dmy(b.created).slice(0, 5), progressText(b)].filter(Boolean).join(" · ") }
+/* what the batch puts in each linked field: { fieldKey: value } */
+function batchValues(f, fields, sid) {
+  const b = sid ? D().samples.find(x => !x.deleted && x.sampleId === sid) : null; if (!b) return null;
+  const src = prot(b.protocolId); const map = f.map || {}; const out = {};
   fields.forEach(t => { if (t === f) return; const lbl = t.label.trim().toLowerCase();
     let sk = map[lbl]; if (!sk && src) { const same = src.fields.find(x => x.label.trim().toLowerCase() === lbl); if (same) sk = same.key }
     if (!sk) return; const v = (b.values || {})[sk];
-    vals[t.key] = v != null && v !== "" ? String(v) : ((t.options || []).includes("None") ? "None" : "") });
+    out[t.key] = v != null && v !== "" ? String(v) : ((t.options || []).includes("None") ? "None" : "") });
+  return out;
 }
-function batchCard(id, exceptSampleId) {
-  const b = D().samples.find(x => !x.deleted && x.sampleId === id); if (!b) return null; const pr = prot(b.protocolId);
-  const used = D().samples.filter(x => !x.deleted && x.id !== exceptSampleId && Object.values(x.values || {}).includes(id)).length;
-  const c = el("div", { class: "card stack" }, el("div", { class: "row between" }, el("span", { class: "eyebrow", text: "Batch " + b.sampleId }), el("button", { class: "link", type: "button", text: "Open ›", onclick: () => { closeSheet(); go("sample", { id: b.id }) } })));
-  const fs = pr ? pr.fields.filter(x => shown(x, b.values) && (b.values || {})[x.key] != null).sort((a, z) => a.step - z.step) : [];
-  fs.forEach(x => c.append(el("div", { class: "kv" }, el("span", { text: x.label }), el("span", { text: x.type === "Check" ? "Yes" : b.values[x.key] + (x.unit ? " " + x.unit : "") }))));
-  derivedFor(pr ? pr.fields : [], b.values || {}).forEach(([k, v]) => c.append(el("div", { class: "kv" }, el("span", { text: k }), el("span", { class: "green-t", text: v }))));
-  const made = (b.values || {}).pellets_made; c.append(el("p", { class: "fine", text: "Made " + dmy(b.created) + (b.location ? " · " + b.location : "") + " · " + used + (made ? " of " + made : "") + " pellets logged from this batch" }));
-  return c;
+function applyBatch(f, fields, vals) { const bv = batchValues(f, fields, vals[f.key]); if (bv) Object.assign(vals, bv) }
+function sameVal(a, b) { a = a == null ? "" : String(a).trim(); b = b == null ? "" : String(b).trim(); if (a === b) return true; const x = num(a), y = num(b); return !isNaN(x) && !isNaN(y) && x === y }
+/* fields changed from what the batch gave them: { fieldKey: batchValue } */
+function batchDiffOf(fields, vals) {
+  const bf = fields.find(f => f.type === "Batch"); const bv = bf && batchValues(bf, fields, vals[bf.key]); if (!bv) return null;
+  const d = {}; fields.forEach(f => { if (f.key in bv && shown(f, vals) && !sameVal(vals[f.key], bv[f.key])) d[f.key] = bv[f.key] }); return Object.keys(d).length ? d : null;
+}
+/* under a field the batch filled: where it came from, or that it was changed for this pellet */
+function batchNote(f, vals, bv, sid, onReset) {
+  const n = el("div", { class: "hint2" });
+  n._upd = () => { if (sameVal(vals[f.key], bv[f.key])) { n.className = "hint2"; n.replaceChildren((f.hint ? f.hint + " · " : "") + "from " + sid); n.closest(".field") && n.closest(".field").classList.remove("changed"); return }
+    n.className = "hint2 chg-t"; n.replaceChildren("Changed for this pellet · batch has " + (bv[f.key] === "" ? "nothing" : bv[f.key] + (f.unit && f.type === "Number" ? " " + f.unit : "")) + " · ", el("button", { class: "link inl", type: "button", text: "Use batch value", onclick: () => { vals[f.key] = bv[f.key]; onReset() } }));
+    n.closest(".field") && n.closest(".field").classList.add("changed") };
+  return n;
 }
 function sheet(title, body) { const b = $("sheetBody"); b.replaceChildren(el("h2", { text: title }), body); $("sheet").hidden = false }
 function closeSheet() { $("sheet").hidden = true; $("sheetBody").replaceChildren() }
@@ -638,8 +759,11 @@ function fieldInput(f, vals, onChange, fields) {
   const dep = (fields || []).some(x => x.showIf && x.showIf.key === f.key);
   if (f.type === "Calc") { const d = el("div", { class: "calcval" }); d._upd = () => { computeCalc([f], vals); d.textContent = calcText(f, vals) }; d._upd(); return d }
   if (f.type === "Batch") {
-    const sel = el("select", {}, el("option", { value: "", text: "Pick a batch…" }), ...batchList(f).map(b => el("option", { value: b.sampleId, selected: vals[f.key] === b.sampleId, text: batchLabel(b) })));
-    if (!batchList(f).length) sel.append(el("option", { value: "", disabled: true, text: "No batches logged yet" }));
+    /* finished batches (every pellet logged or lost) drop off, unless one is already picked */
+    const all = batchList(f), list = all.filter(b => !batchStats(b).done || b.sampleId === vals[f.key]);
+    const sel = el("select", {}, el("option", { value: "", text: "Pick a batch…" }), ...list.map(b => el("option", { value: b.sampleId, selected: vals[f.key] === b.sampleId, text: batchLabel(b) })));
+    if (!list.length) sel.append(el("option", { value: "", disabled: true, text: all.length ? "Every batch is finished" : "No batches logged yet" }));
+    else if (list.length < all.length) sel.append(el("option", { value: "", disabled: true, text: (all.length - list.length) + " finished " + (all.length - list.length === 1 ? "batch" : "batches") + " hidden" }));
     sel.addEventListener("change", () => { vals[f.key] = sel.value; if (sel.value && fields) applyBatch(f, fields, vals); changed(true) });
     return sel;
   }
@@ -660,23 +784,46 @@ function editSample(s) {
   const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, type: typeof s.values[k] === "number" ? "Number" : "Text", unit: "" }));
   const vals = Object.assign({}, s.values || {});
   const sid = el("input", { type: "text", value: s.sampleId, autocapitalize: "characters" });
-  const loc = { value: s.location || "" }; const locLbl = el("div", { class: "big", text: loc.value || "Not set" });
-  const locBox = el("div", {}); const drawLoc = () => locBox.replaceChildren(locationPicker(loc.value, v => { loc.value = v; locLbl.textContent = v || "Not set"; drawLoc() }, s.id)); drawLoc();
+  const bf = fields.find(f => f.type === "Batch");
+  const kidsN = pelletsOf(s).length;
+  /* a mixture batch keeps a run of spots; a pellet sits in one */
+  const rangeMode = pr && pr.kind === "fjhmix" && !(kidsN && (s.slots || []).length);
+  const loc = { value: s.location || "", loc: (s.slots || [])[0] || s.location || "" };
+  const locLbl = el("div", { class: "big", text: loc.value || "Not set" }); const locBox = el("div", {});
+  let rp = null;
+  const drawLoc = () => { if (rangeMode) { rp = rangePicker(loc, () => vals.pellets_made, s.id); locLbl.hidden = true; locBox.replaceChildren(rp); return }
+    if ((s.slots || []).length) { locBox.replaceChildren(el("p", { class: "fine", text: kidsN + " pellets are already logged into these spots, so the range can't move. Mark spots empty from the box map." })); return }
+    locBox.replaceChildren(locationPicker(loc.value, v => { loc.value = v; locLbl.textContent = v || "Not set"; drawLoc() }, s.id, bf ? vals[bf.key] : "")) }; drawLoc();
   const status = el("input", { type: "text", value: s.status || "" });
   const notes = el("textarea", {}); notes.value = s.notes || "";
   const dt = dateInput(dmy(s.created));
   const body = el("div", { class: "stack" }, el("label", { text: "Sample ID" }), sid, el("label", { text: "Date (dd/mm/yyyy)" }), dt, el("label", { text: "Stored at" }), locLbl, locBox, el("label", { text: "Status" }), status);
   if (fields.length) { body.append(el("div", { class: "eyebrow", style: "margin-top:8px", text: "Measurements" }));
-    const fb = el("div", { class: "stack" }); const drawF = () => fb.replaceChildren(...fields.filter(f => shown(f, vals)).flatMap(f => [el("label", { text: f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : "") }), fieldInput(f, vals, r => { if (r) drawF(); else fb.querySelectorAll(".calcval").forEach(d => d._upd()) }, fields), f.type === "Batch" && vals[f.key] ? batchCard(vals[f.key], s.id) : null].filter(Boolean))); drawF(); body.append(fb) }
+    const fb = el("div", { class: "stack" }); let notesUpd = [];
+    const drawF = () => { notesUpd = []; const bv = bf ? batchValues(bf, fields, vals[bf.key]) : null;
+      fb.replaceChildren(...fields.filter(f => shown(f, vals)).map(f => { const w = el("div", { class: "field" }, el("label", { text: f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : "") }), fieldInput(f, vals, r => { if (r) drawF(); else { fb.querySelectorAll(".calcval").forEach(d => d._upd()); notesUpd.forEach(u => u()); if (rp) rp._redraw() } }, fields));
+        if (bv && f.key in bv) { const n = batchNote(f, vals, bv, vals[bf.key], drawF); w.append(n); notesUpd.push(n._upd) } return w }));
+      notesUpd.forEach(u => u()) };
+    drawF(); body.append(fb) }
+  let armed = "";
   body.append(el("label", { text: "Notes" }), notes,
     el("button", { class: "primary", type: "button", text: "Save changes", onclick: async () => {
       const nid = sid.value.trim(); if (!nid) return toast("The sample needs an ID", true);
       if (nid !== s.sampleId && sampleBy(nid)) return toast(nid + " already exists", true);
       const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true); computeCalc(fields, vals);
       for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
+      let where = { location: loc.value };
+      if (rangeMode) { const I = rp._info();
+        if (I.slots.length) { if (I.over > 0) return toast("Those pellets don't fit from " + loc.loc + ". Pick an earlier spot.", true);
+          if (I.clashes.length && armed !== I.label) { armed = I.label; return toast("Some of those spots are in use. Tap Save again to keep them anyway.", true) }
+          where = { location: I.label, slots: I.slots } } else where = { location: loc.loc, slots: undefined } }
       const clean = {}; fields.forEach(f => { const v = vals[f.key]; if (shown(f, vals) && v != null && v !== "") clean[f.key] = (f.type === "Number" || f.type === "Calc") ? num(v) : v });
       if (nid !== s.sampleId) D().log.forEach(l => { if (l.sampleId === s.sampleId) { l.sampleId = nid; l.updated = Date.now() } });
-      Object.assign(s, { sampleId: nid, created: dmy(day.getTime()) === dmy(s.created) ? s.created : onDay(day, s.created), logged: s.logged || s.created, location: loc.value, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() });
+      const diff = bf ? batchDiffOf(fields, vals) : null; const B = bf && vals[bf.key] ? sampleBy(vals[bf.key]) : null;
+      Object.assign(s, { sampleId: nid, created: dmy(day.getTime()) === dmy(s.created) ? s.created : onDay(day, s.created), logged: s.logged || s.created, status: status.value.trim(), notes: notes.value.trim(), values: clean, edited: Date.now(), updated: Date.now() }, where);
+      if (!where.slots) delete s.slots;
+      if (diff) s.batchDiff = diff; else delete s.batchDiff;
+      if (B && (B.slots || []).includes(s.location)) s.batchSlot = s.location; else if (!B) delete s.batchSlot;
       await persist(); closeSheet(); render(); toast("Saved " + nid) } }),
     el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }));
   sheet("Edit " + s.sampleId, body);
@@ -798,11 +945,12 @@ function protoVars(pr) {
   const lbl = fields.map(f => f.label.trim().toLowerCase());
   if (["mass", "diameter", "height"].every(x => lbl.includes(x))) v.push({ key: "_density", label: "Density (g/cm³)", kind: "num" });
   if (["diameter", "breaking force"].every(x => lbl.includes(x))) v.push({ key: "_strength", label: "Strength F/A (kPa)", kind: "num" });
+  if (lbl.includes("diameter") && compField(fields)) v.push({ key: "_pressure", label: "Compaction pressure (MPa)", kind: "num" });
   v.push({ key: "_date", label: "Date made", kind: "date" }, { key: "_loc", label: "Storage location", kind: "cat", order: locs().flatMap(l => l.tray ? ROWS.flatMap(r => COLS.map(c => slotName(l.name, r, c))) : [l.name]) });
   return v;
 }
 function varVal(s, key, pr) {
-  if (key === "_density" || key === "_strength") { const d = derivedNum(pr.fields, s.values || {}); return key === "_density" ? d.density : d.strength }
+  if (key === "_density" || key === "_strength" || key === "_pressure") { const d = derivedNum(pr.fields, s.values || {}); return key === "_density" ? d.density : key === "_strength" ? d.strength : d.pressure }
   if (key === "_date") return s.created; if (key === "_loc") return s.location || ""; const v = (s.values || {})[key]; return v == null ? "" : v;
 }
 function niceTicks(lo, hi, n) { if (!(hi > lo)) { lo -= 1; hi += 1 } const s0 = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(s0)); const st = [1, 2, 2.5, 5, 10].map(m => m * mag).find(x => x >= s0); const a = Math.floor(lo / st) * st, b = Math.ceil(hi / st) * st; const t = []; for (let x = a; x <= b + st / 2; x += st) t.push(+x.toFixed(10)); return t }
@@ -870,14 +1018,34 @@ VIEWS.sample = (view, { id }) => {
   const pr = prot(s.protocolId);
   setTitle(s.sampleId, ((pr || {}).name || s.protocolName || "Photo log") + " · " + projName(s.projectId));
   view.append(el("button", { class: "ghost", type: "button", text: "✎ Edit sample and measurements", onclick: () => editSample(s) }));
-  const loc = locationPicker(s.location, async v => { s.location = v; s.updated = Date.now(); await persist(); toast(v ? "Moved to " + v : "Location cleared"); render() }, s.id);
-  view.append(el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }), loc));
+  const store = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Stored at" }), el("div", { class: "big", text: s.location || "Not set" }));
+  if ((s.slots || []).length) {
+    /* a batch: its spots, which pellet went where, and which were emptied */
+    const pel = pelletsOf(s), free = new Set(reservedFree(s)); const tray = trays().find(t => t.name === parseSlot(s.slots[0]).tray);
+    store.append(el("div", { class: "muted small", text: progressText(s) + " · " + free.size + (free.size === 1 ? " spot" : " spots") + " still kept for this batch" }));
+    const list = el("div", { class: "list" });
+    s.slots.forEach(sl => { const p = parseSlot(sl), by = pel.find(x => x.batchSlot === sl), g = (s.gone || {})[sl];
+      const right = by ? el("button", { class: "link", type: "button", style: "padding:0", text: by.sampleId + (by.removed ? " · " + by.removed.reason : "") + " ›", onclick: () => go("sample", { id: by.id }) })
+        : g ? el("span", { class: "row", style: "gap:8px" }, el("span", { class: "small amber-t", text: g.reason + " · " + dmy(g.at) }), el("button", { class: "link", type: "button", style: "padding:0", text: "Put back", onclick: async () => { const ng = Object.assign({}, s.gone); delete ng[sl]; s.gone = ng; s.updated = Date.now(); await persist(); toast(sl + " is kept for " + s.sampleId + " again"); render() } }))
+        : free.has(sl) ? el("button", { class: "link", type: "button", style: "padding:0", text: "Mark empty", onclick: () => spotSheet(sl, { s, reserved: true }) }) : el("span", { class: "small muted", text: "Free" });
+      list.append(el("div", { class: "kv" }, el("span", { text: p.row + p.col + (by ? "" : g ? "" : free.has(sl) ? " · waiting to be logged" : "") }), right)) });
+    store.append(list);
+    if (tray) store.append(el("button", { class: "link", type: "button", style: "justify-self:start;padding:0", text: "Open the box map for " + tray.name + " ›", onclick: () => go("boxes", { tray: tray.name }) }));
+  } else {
+    if (s.removed) store.append(el("div", { class: "row between" }, el("span", { class: "small amber-t", text: s.removed.reason + " · " + dmy(s.removed.at) + (s.removed.from ? " · was in " + s.removed.from : "") }),
+      el("button", { class: "link", type: "button", style: "padding:0", text: "Put back", onclick: async () => { if (putBack(s)) { await persist(); toast(s.sampleId + " is back in " + (s.location || "storage")); render() } } })));
+    if (parseSlot(s.location)) store.append(el("button", { class: "ghost slim", type: "button", text: "Mark this spot empty…", onclick: () => spotSheet(s.location, { s }) }));
+    const B = batchOf(s);
+    store.append(locationPicker(s.location, async v => { s.location = v; if (B && (B.slots || []).includes(v)) s.batchSlot = v; s.updated = Date.now(); await persist(); toast(v ? "Moved to " + v : "Location cleared"); render() }, s.id, B ? B.sampleId : ""));
+  }
+  view.append(store);
   const vals = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Measurements" }));
   const fields = pr ? pr.fields.filter(f => !f.off || (s.values || {})[f.key] != null).sort((a, b) => a.step - b.step) : Object.keys(s.values || {}).map(k => ({ key: k, label: k, unit: "" }));
-  let any = false;
-  fields.forEach(f => { const v = (s.values || {})[f.key]; if (v === undefined || v === "" || !shown(f, s.values)) return; any = true;
+  let any = false; const diff = s.batchDiff || {};
+  fields.forEach(f => { const v = (s.values || {})[f.key]; if ((v === undefined || v === "") && !(f.key in diff) || !shown(f, s.values)) return; any = true;
     if (f.type === "Batch") { const b = D().samples.find(x => !x.deleted && x.sampleId === v); vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), b ? el("button", { class: "link", type: "button", style: "padding:0", text: v + " ›", onclick: () => go("sample", { id: b.id }) }) : el("span", { text: v }))); return }
-    vals.append(el("div", { class: "kv" }, el("span", { text: f.label }), el("span", { text: f.type === "Check" ? "Yes" : v + (f.unit ? " " + f.unit : "") }))) });
+    const unit = f.unit && f.type !== "Check" ? " " + f.unit : "";
+    vals.append(el("div", { class: "kv" + (f.key in diff ? " changed" : "") }, el("span", {}, f.label, f.key in diff ? el("small", { class: "chg-t", text: " · changed (batch " + (diff[f.key] === "" ? "blank" : diff[f.key] + unit) + ")" }) : null), el("span", { text: v === undefined || v === "" ? "–" : f.type === "Check" ? "Yes" : v + unit }))) });
   if (pr && pr.idPrefix) { const kids = D().samples.filter(x => !x.deleted && x.id !== s.id && Object.values(x.values || {}).includes(s.sampleId)); if (kids.length) vals.append(el("div", { class: "kv" }, el("span", { text: "Pellets logged from this batch" }), el("span", { class: "green-t", text: kids.map(k => k.sampleId).join(", ") }))) }
   derivedFor(fields, s.values || {}).forEach(([k, v]) => { any = true; vals.append(el("div", { class: "kv" }, el("span", { text: k }), el("span", { class: "green-t", text: v }))) });
   if (!any) vals.append(el("p", { class: "empty", text: "No measurements recorded." }));
@@ -934,40 +1102,96 @@ VIEWS.lab = view => {
     el("div", { class: "green-t small", text: projName(p.projectId) + " · " + liveFields(p).length + " fields · " + n + (n === 1 ? " sample" : " samples") }), p.description ? el("div", { class: "muted small", text: p.description }) : null,
     el("div", { class: "two" }, el("button", { class: "primary slim", type: "button", text: "Log samples", onclick: () => go("run", { id: p.id }) }), el("button", { class: "ghost slim", type: "button", text: "📈 Results", onclick: () => go("results", { id: p.id }) })))) });
   if (!D().protocols.length) list.append(el("div", { class: "card stack" }, el("p", { class: "muted", text: "No protocols yet. Import your Excel files in Settings, or send Claude a protocol document and paste what it gives you into Settings → Add a protocol." })));
+  if (trays().length) list.prepend(el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("boxes", {}) }, el("span", { class: "big", text: "🗂 Box map" }), el("span", { class: "muted small", text: trays().length + (trays().length === 1 ? " box" : " boxes") + " ›" })));
   view.append(list);
+};
+/* every tray as a 4 × 6 map: tap a spot to open what's in it or mark it empty */
+VIEWS.boxes = (view, { tray }) => {
+  const ts = trays().filter(t => !tray || t.name === tray); const occ = occupancy();
+  setTitle(tray || "Box map", "Tap a spot to open it or mark it empty");
+  ts.forEach(t => { const n = allSlots(t.name).filter(sl => occ.has(sl)).length;
+    const c = el("div", { class: "card stack", "data-nofold": "1" }, el("div", { class: "row between" }, el("span", { class: "big" }, trayDot(t), t.name), el("span", { class: "muted small", text: n + "/24 in use" })),
+      trayGrid(t, { occ, after: render }));
+    const lg = trayLegend(t, occ); if (lg) c.append(lg);
+    view.append(c) });
+  if (!ts.length) view.append(el("p", { class: "empty", text: "No trays yet. Add one in Settings → Storage." }));
+  view.append(el("p", { class: "fine", text: "Numbers are sample numbers. Dashed spots are kept for pellets from a batch that haven't been logged yet; each batch has its own colour." }));
+  if (tray) view.append(el("button", { class: "link", type: "button", text: "Show every box", onclick: () => go("boxes", {}) }));
 };
 VIEWS.run = (view, { id }) => {
   const p = prot(id); if (!p) return back();
   const fields = liveFields(p).sort((a, b) => a.step - b.step);
   S.runKeep = S.runKeep && S.runKeep.protocol === p.id ? S.runKeep : { protocol: p.id, values: {}, count: 0, location: "" };
   const K = S.runKeep; const vals = {}; fields.forEach(f => { if (f.keep && K.values[f.key] != null) vals[f.key] = K.values[f.key] });
+  /* fields with a starting value (e.g. pellet diameter 10 mm) start there for every sample */
+  fields.forEach(f => { if (f.dflt != null) vals[f.key] = String(f.dflt) });
+  /* storage works three ways: a mixture keeps a run of spots, a pellet goes into one of its batch's spots, anything else picks a spot */
+  const bf = fields.find(f => f.type === "Batch"); const countF = fields.find(f => f.key === "pellets_made" || /^pellets made$/i.test(f.label.trim()));
+  const mode = p.kind === "fjhmix" && countF ? "range" : bf ? "batch" : "plain";
+  /* a pellet's batch values are refilled for every pellet, so a change made for one pellet doesn't carry on to the next */
+  if (bf && vals[bf.key]) { const B0 = sampleBy(vals[bf.key]); if (!B0 || batchStats(B0).done) { delete vals[bf.key]; K.location = ""; K.elsewhere = false } else applyBatch(bf, fields, vals) }
   setTitle(p.name, projName(p.projectId) + " · " + K.count + " saved this session");
   const top = el("div", { class: "stack" });
   if (p.docLink) top.append(el("a", { class: "link", href: p.docLink, target: "_blank", rel: "noopener", text: "Open protocol document ↗" }));
   top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "📈 See results and charts ›", onclick: () => go("results", { id: p.id }) }), el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "✏️ Remove or restore fields ›", onclick: () => go("protofields", { id: p.id }) }));
+  if (mode !== "plain") top.append(el("button", { class: "link", type: "button", style: "text-align:left;padding:0", text: "🗂 Box map ›", onclick: () => go("boxes", {}) }));
   const sid = el("input", { type: "text", value: nextSampleId(p.projectId, p), autocapitalize: "characters", style: "font-size:20px;font-weight:700" });
   const auto = el("button", { class: "ghost", type: "button", text: "Auto", onclick: () => sid.value = nextSampleId(p.projectId, p) });
-  if (K.location && parseSlot(K.location) && holder(K.location)) K.location = nextSlot(K.location);
-  const locLbl = el("div", { class: "big green-t" }); const loc = el("div", {});
-  const drawLoc = () => { locLbl.textContent = K.location ? K.location + (parseSlot(K.location) ? "  (auto-advances)" : "") : "Not set"; loc.replaceChildren(locationPicker(K.location, v => { K.location = v; drawLoc() })) }; drawLoc();
+  if (mode !== "batch" && K.location && parseSlot(K.location) && holder(K.location)) K.location = nextSlot(K.location);
   const dt = dateInput(K.date || dmy(Date.now())); dt.addEventListener("change", () => { K.date = dt.value.trim() === dmy(Date.now()) ? "" : dt.value.trim() });
   const today = el("button", { class: "ghost", type: "button", text: "Today", onclick: () => { dt.value = dmy(Date.now()); K.date = "" } });
-  top.append(el("label", { text: p.idPrefix ? "BATCH ID" : "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today), el("label", { text: "STORED AT" }), locLbl, loc);
+  top.append(el("label", { text: p.idPrefix ? "BATCH ID" : "SAMPLE ID" }), el("div", { class: "inline" }, sid, auto), el("label", { text: "DATE (DD/MM/YYYY)" }), el("div", { class: "inline" }, dt, today));
+  if (mode === "plain") { const locLbl = el("div", { class: "big green-t" }); const loc = el("div", {});
+    const drawLoc = () => { locLbl.textContent = K.location ? K.location + (parseSlot(K.location) ? "  (auto-advances)" : "") : "Not set"; loc.replaceChildren(locationPicker(K.location, v => { K.location = v; drawLoc() })) }; drawLoc();
+    top.append(el("label", { text: "STORED AT" }), locLbl, loc) }
   view.append(top);
   const form = el("div", { class: "card" }); const derived = el("div", { class: "derived" });
-  const recalc = () => { computeCalc(fields, vals); form.querySelectorAll(".calcval").forEach(d => d._upd()); derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
-  const drawForm = () => { form.replaceChildren();
+  let upds = [], rp = null; const rangeSt = { get loc() { return K.location || "" }, set loc(v) { K.location = v } };
+  const recalc = () => { computeCalc(fields, vals); form.querySelectorAll(".calcval").forEach(d => d._upd()); upds.forEach(u => u()); derived.textContent = derivedFor(fields, vals).map(([k, v]) => k + " " + v).join("   ·   ") };
+  const curBatch = () => bf && vals[bf.key] ? sampleBy(vals[bf.key]) : null;
+  /* a pellet: the spots its batch kept, next free one picked */
+  const pelletStore = () => {
+    const B = curBatch(); const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", { text: "Stored at" }), el("small", { text: "Pellet" })));
+    const spots = B && (B.slots || []).length ? B.slots : [];
+    if (spots.length && !K.elsewhere) {
+      const free = reservedFree(B); if (!free.includes(K.location)) K.location = free[0] || "";
+      const pel = pelletsOf(B), stt = batchStats(B);
+      box.append(el("div", { class: "hint2", text: parseSlot(spots[0]).tray + " · spots kept for " + B.sampleId + " · " + stt.logged + " of " + stt.made + " logged" + (stt.lost ? " · " + stt.lost + " lost" : "") }));
+      const ch = el("div", { class: "chips wrap" });
+      spots.forEach(sl => { const q = parseSlot(sl), by = pel.find(x => x.batchSlot === sl), g = (B.gone || {})[sl];
+        ch.append(el("button", { class: "chip" + (by || g ? " taken" : ""), type: "button", "aria-pressed": String(K.location === sl), text: q.row + q.col + (by ? " · " + shortNum(by) : g ? " · " + g.reason : ""),
+          onclick: () => { if (by) return toast(sl + " already holds " + by.sampleId, true); if (g) return toast(sl + " was marked empty (" + g.reason + ")", true); K.location = sl; drawForm() } })) });
+      box.append(ch, el("div", { class: "big green-t", text: K.location || "No free spot" }));
+      if (!free.length) box.append(el("p", { class: "fine amber-t", text: "Every spot kept for this batch is used. Pick somewhere else." }));
+      box.append(el("button", { class: "link", type: "button", style: "justify-self:start;padding:0", text: "Somewhere else ›", onclick: () => { K.elsewhere = true; K.location = ""; drawForm() } }));
+    } else {
+      const ok = B ? B.sampleId : ""; if (K.location && parseSlot(K.location) && holder(K.location, null, ok)) K.location = nextSlot(K.location, null, ok);
+      box.append(el("div", { class: "big green-t", text: K.location || "Not set" }), locationPicker(K.location, v => { K.location = v; drawForm() }, null, ok));
+      if (spots.length) box.append(el("button", { class: "link", type: "button", style: "justify-self:start;padding:0", text: "‹ Back to the spots kept for " + B.sampleId, onclick: () => { K.elsewhere = false; K.location = ""; drawForm() } }));
+    }
+    return box;
+  };
+  /* a mixture: tap the first spot; the pellet count sets how many are kept */
+  const mixStore = () => { const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", { text: "Stored at" }), el("small", { text: "Pellets" })));
+    rp = rangePicker(rangeSt, () => vals[countF.key]); upds.push(() => rp._redraw()); box.append(rp); return box };
+  const drawForm = () => { form.replaceChildren(); upds = []; rp = null;
+    const B = curBatch(); const bv = B ? batchValues(bf, fields, B.sampleId) : null;
     fields.filter(f => shown(f, vals)).forEach(f => {
       const box = el("div", { class: "field" }, el("div", { class: "lab" }, el("span", {}, f.label + (f.unit && f.type !== "Check" ? " (" + f.unit + ")" : ""), f.required ? el("span", { class: "req", text: " *" }) : null), el("small", { text: f.section || "" })));
-      if (f.hint || f.keep) box.append(el("div", { class: "hint2", text: [f.hint, f.keep ? "kept for the next sample" : ""].filter(Boolean).join(" · ") }));
-      box.append(fieldInput(f, vals, r => { if (r) drawForm(); recalc() }, fields));
-      if (f.type === "Batch" && vals[f.key]) { const bc = batchCard(vals[f.key]); if (bc) box.append(bc) }
+      const linked = bv && f.key in bv;
+      if (!linked && (f.hint || (f.keep && f.dflt == null))) box.append(el("div", { class: "hint2", text: [f.hint, f.keep && f.dflt == null ? "kept for the next sample" : ""].filter(Boolean).join(" · ") }));
+      box.append(fieldInput(f, vals, r => { if (r) drawForm(); else recalc() }, fields));
+      if (linked) { const n = batchNote(f, vals, bv, B.sampleId, drawForm); box.append(n); upds.push(n._upd) }
+      if (compField(fields) === f) { const pc = el("div", { class: "pcalc" }); upds.push(() => { const pr = pressureOf(fields, vals); pc.textContent = pr > 0 ? "= " + fmtN(pr) + " MPa on a " + fmtN(num(vals[(fields.find(x => x.label.trim().toLowerCase() === "diameter") || {}).key])) + " mm pellet" : "" }); box.append(pc) }
       form.append(box);
+      if (mode === "batch" && f === bf) form.append(pelletStore());
+      if (mode === "range" && f === countF) form.append(mixStore());
     }); recalc() };
   drawForm(); view.append(form, derived);
   const st = { photos: [] }; const notes = el("textarea", { placeholder: "Notes for this sample", style: "min-height:80px" });
   view.append(photoPicker(st), notes);
   const save = el("button", { class: "primary", type: "button" }); const label = () => save.textContent = "Save " + (sid.value.trim() || "sample"); label(); sid.addEventListener("input", label);
+  let armed = "";
   save.onclick = async () => {
     const s = sid.value.trim(); if (!s) return toast("Give the sample an ID first", true);
     const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true); computeCalc(fields, vals);
@@ -976,13 +1200,26 @@ VIEWS.run = (view, { id }) => {
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
     for (const f of fields) if (shown(f, vals) && f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
     const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("Fly ash and carbon add up to " + +sum.toFixed(2) + "% of the solids, not 100%.", true);
+    let where = { location: K.location || "" };
+    if (mode === "range" && parseSlot(K.location)) { const I = rp ? rp._info() : null;
+      if (!I || !(I.n > 0)) return toast("Enter Pellets made so the app knows how many spots to keep.", true);
+      if (I.over > 0) return toast(I.n + " pellets don't fit from " + K.location + ". Pick an earlier spot or another box.", true);
+      if (I.clashes.length && armed !== I.label) { armed = I.label; return toast("Some of those spots are in use. Tap Save again to keep them anyway.", true) }
+      where = { location: I.label, slots: I.slots } }
+    const B = mode === "batch" ? curBatch() : null; const inRange = !!B && (B.slots || []).includes(K.location);
+    if (inRange) where.batchSlot = K.location;
+    const diff = B ? batchDiffOf(fields, vals) : null; if (diff) where.batchDiff = diff;
     { const sp = solidsPct(fields, vals); if (sp._auto) vals[sp._auto] = String(+sp[sp._auto].toFixed(4)) }
     save.disabled = true; save.textContent = "Saving…";
     const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = (f.type === "Number" || f.type === "Calc") ? num(vals[f.key]) : vals[f.key] });
-    D().samples.push({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), location: K.location, status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() });
+    D().samples.push(Object.assign({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() }, where));
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
-    if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx } K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
-    await persist(); toast("Saved " + s); render();
+    /* where the next one goes: the batch's next free spot, the spot after this mixture's run, or the next spot along */
+    if (inRange) K.location = "";
+    else if (where.slots) { const nx = nextSlot(where.slots[where.slots.length - 1]); K.location = nx }
+    else if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx }
+    K.elsewhere = false; K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
+    await persist(); toast("Saved " + s + (where.slots ? " · " + where.location : inRange ? " in " + where.batchSlot : "")); render();
   };
   view.append(el("div", { class: "sticky-save" }, save));
 };
@@ -1047,9 +1284,10 @@ VIEWS.settings = view => {
       await persist(); toast("Removed " + ns + " samples and " + nl + " entries. Numbering restarts at " + prefixOf(proj(pid)) + "-0001."); render() })));
   // locations
   const lc = el("div", { class: "card stack" }, el("div", { class: "eyebrow", text: "Storage" }));
-  locs().forEach(L => { const used = L.tray ? D().samples.filter(x => !x.deleted && (parseSlot(x.location) || {}).tray === L.name).length : D().samples.filter(x => !x.deleted && x.location === L.name).length;
-    lc.append(el("div", { class: "row between" }, el("span", { class: "small grow" }, L.tray ? trayDot(L) : null, " " + L.name + (L.tray ? " · " + used + "/24 filled" : used ? " · " + used : "")),
-      L.tray ? el("button", { class: "link", type: "button", text: "Map", onclick: () => sheet(L.name, el("div", { class: "stack" }, trayMap(L), el("p", { class: "fine", text: "Numbers are sample numbers. Tap one to open it." }))) }) : null,
+  const occ = occupancy();
+  locs().forEach(L => { const used = L.tray ? allSlots(L.name).filter(sl => occ.has(sl)).length : D().samples.filter(x => !x.deleted && x.location === L.name).length;
+    lc.append(el("div", { class: "row between" }, el("span", { class: "small grow" }, L.tray ? trayDot(L) : null, " " + L.name + (L.tray ? " · " + used + "/24 in use" : used ? " · " + used : "")),
+      L.tray ? el("button", { class: "link", type: "button", text: "Map", onclick: () => go("boxes", { tray: L.name }) }) : null,
       el("button", { class: "link", type: "button", text: "Remove", onclick: async e => { if (e.target.dataset.c !== "1") { e.target.dataset.c = "1"; e.target.textContent = used ? "Tap again (" + used + " samples keep the label)" : "Tap again"; return } L.deleted = true; L.updated = Date.now(); await persist(); render() } }))) });
   const ln = el("input", { type: "text", placeholder: "Name, e.g. White 2 or Fridge" }); let col = "White";
   const cc = el("div", { class: "chips" }); const drawC = () => { cc.replaceChildren(...["White", "Gray", "Black", "Not a tray"].map(c => { const b = el("button", { class: "chip", type: "button", "aria-pressed": String(col === c) }, c in TRAY_COLOURS ? trayDot({ colour: TRAY_COLOURS[c] }) : null, " " + c); b.onclick = () => { col = c; drawC() }; return b })) }; drawC();
