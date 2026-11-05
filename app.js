@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.19";
-const WHATS_NEW = "The top bar and bottom menu stay put when you scroll · ← → to step through samples · pick a spot on the box map";
+const APP_VERSION = "1.20";
+const WHATS_NEW = "Pellet programme: a daily schedule of what to mix, press and test, in Lab mode · green mass and graphite on the pellet forms";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -273,7 +273,8 @@ function trayLegend(t, occ) {
 function emptyReasons() {
   const f = D().protocols.filter(p => !p.deleted).flatMap(p => p.fields || []).find(x => x.type === "Choice" && (x.options || []).some(o => /crumbl/i.test(o)));
   const o = (f ? f.options : ["Crumbled", "Split", "Chipped", "Destroyed"]).filter(x => !/^(intact|none|ok|good|whole|fine|no damage|undamaged|n\/?a|used up)$/i.test(String(x).trim()));
-  return ["Used up", ...o, ...(o.some(x => /^lost$/i.test(x)) ? [] : ["Lost"])];
+  const pg = progOn() ? ["Deformed", "Spare, not needed"].filter(x => !o.includes(x)) : [];
+  return ["Used up", ...o, ...pg, ...(o.some(x => /^lost$/i.test(x)) ? [] : ["Lost"])];
 }
 function reasonChips(onPick) { const c = el("div", { class: "chips wrap" }); emptyReasons().forEach(r => c.append(el("button", { class: "chip", type: "button", text: r, onclick: () => onPick(r) }))); return c }
 /* empty a logged sample's spot; the reason stays on its record */
@@ -362,6 +363,7 @@ function migrate() {
       if (/^replicate$/i.test(f.label.trim()) && !f.off) f.off = true;
       if (/^diameter$/i.test(f.label.trim()) && f.type === "Number" && f.dflt == null) { f.dflt = "10"; f.hint = f.hint || "10 mm unless you change it" } });
     pel.updated = Date.now(); st.pelletV2 = true; changed = true } }
+  if (progMigrate()) changed = true;
   return changed;
 }
 function addMixProtocol() {
@@ -469,8 +471,8 @@ function mixGrams(fields, values) {
 }
 function pctSum(fields, values) { const ds = fields.filter(x => x.pctOf === "dry"); if (ds.length) { const sp = solidsPct(fields, values); const ks = ds.filter(x => x.key in sp); return ks.length ? ks.reduce((a, x) => a + sp[x.key], 0) : null }
   const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
-/* calculated fields: fly ash = 100 − carbon (of the solids); also shown as % of the whole mix using the water % */
-function faCalc(vals) { const c = num(vals.carbon_pct), w = num(vals.water_pct); const solids = 100 - (c >= 0 ? c : 0); const total = solids * (100 - (w >= 0 ? w : 0)) / 100; return { solids, total, ok: solids >= 0 } }
+/* calculated fields: fly ash = 100 − carbon − graphite (of the solids); also shown as % of the whole mix using the water % */
+function faCalc(vals) { const c = num(vals.carbon_pct), g = num(vals.graphite_pct), w = num(vals.water_pct); const solids = 100 - (c >= 0 ? c : 0) - (g >= 0 ? g : 0); const total = solids * (100 - (w >= 0 ? w : 0)) / 100; return { solids, total, ok: solids >= 0 } }
 function computeCalc(fields, vals) { fields.forEach(f => { if (f.type === "Calc" && f.calc === "fa") vals[f.key] = String(+faCalc(vals).solids.toFixed(2)) }) }
 function calcText(f, vals) { if (f.calc !== "fa") return ""; const r = faCalc(vals); if (!r.ok) return "Carbon is over 100%"; return +r.solids.toFixed(2) + "% of the solids  ·  " + +r.total.toFixed(2) + "% of the whole mix" }
 /* fields that only show when another field has a given value (e.g. stage 2 drying) */
@@ -478,7 +480,7 @@ const checkLabel = f => (f.options && f.options[0]) || "Done";
 const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
 /* batch links: a Batch field lists samples from another protocol and copies their details */
 const batchList = f => D().samples.filter(x => !x.deleted && x.protocolId === f.from).sort((a, b) => b.created - a.created);
-function batchLabel(b) { const v = b.values || {}; return [b.sampleId, [v.carbon_type ? v.carbon_type + (v.carbon_pct != null ? " " + v.carbon_pct + "%" : "") : "no carbon", v.water_pct != null ? v.water_pct + "% water" : ""].filter(Boolean).join(", "), dmy(b.created).slice(0, 5), progressText(b)].filter(Boolean).join(" · ") }
+function batchLabel(b) { const v = b.values || {}; return [b.sampleId, [v.carbon_type ? v.carbon_type + (v.carbon_pct != null ? " " + v.carbon_pct + "%" : "") + (v.graphite_pct > 0 ? " + graphite " + v.graphite_pct + "%" : "") : "no carbon", b.prog ? b.prog : "", v.water_pct != null ? v.water_pct + "% water" : ""].filter(Boolean).join(", "), dmy(b.created).slice(0, 5), progressText(b)].filter(Boolean).join(" · ") }
 /* what the batch puts in each linked field: { fieldKey: value } */
 function batchValues(f, fields, sid) {
   const b = sid ? D().samples.find(x => !x.deleted && x.sampleId === sid) : null; if (!b) return null;
@@ -611,6 +613,7 @@ VIEWS.home = view => {
   const logW = D().log.filter(l => !l.deleted && l.when >= wk).length;
   const doneW = D().tasks.filter(t => t.done && t.completed && new Date(t.completed + "T12:00:00").getTime() >= wk).length;
   const overdue = open.filter(t => t.due && t.due < t0).length;
+  { const pc = progHomeCard(); if (pc) view.append(pc) }
   view.append(el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("list", { kind: "week" }) }, el("span", { class: "big", text: "This week" }), el("span", { class: "green-t big", text: "›" })));
   const dueCard = el("div", { class: "card" }, el("div", { class: "eyebrow", text: "Due soon" }));
   const list = el("div", { class: "list" });
@@ -1150,6 +1153,7 @@ VIEWS.lab = view => {
     el("div", { class: "green-t small", text: projName(p.projectId) + " · " + liveFields(p).length + " fields · " + n + (n === 1 ? " sample" : " samples") }), p.description ? el("div", { class: "muted small", text: p.description }) : null,
     el("div", { class: "two" }, el("button", { class: "primary slim", type: "button", text: "Log samples", onclick: () => go("run", { id: p.id }) }), el("button", { class: "ghost slim", type: "button", text: "📈 Results", onclick: () => go("results", { id: p.id }) })))) });
   if (!D().protocols.length) list.append(el("div", { class: "card stack" }, el("p", { class: "muted", text: "No protocols yet. Import your Excel files in Settings, or send Claude a protocol document and paste what it gives you into Settings → Add a protocol." })));
+  { const pc = progHomeCard() || (progMix() && pelletProto() ? el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("prog", {}, true) }, el("span", { class: "big", text: "📅 Pellet programme" }), el("span", { class: "muted small", text: "Set up the testing schedule ›" })) : null); if (pc) list.prepend(pc) }
   if (trays().length) list.prepend(el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("boxes", {}) }, el("span", { class: "big", text: "🗂 Box map" }), el("span", { class: "muted small", text: trays().length + (trays().length === 1 ? " box" : " boxes") + " ›" })));
   view.append(list);
 };
@@ -1166,13 +1170,16 @@ VIEWS.boxes = (view, { tray }) => {
   view.append(el("p", { class: "fine", text: "Numbers are sample numbers. Dashed spots are kept for pellets from a batch that haven't been logged yet; each batch has its own colour." }));
   if (tray) view.append(el("button", { class: "link", type: "button", text: "Show every box", onclick: () => go("boxes", {}) }));
 };
-VIEWS.run = (view, { id }) => {
+VIEWS.run = (view, { id, pre }) => {
   const p = prot(id); if (!p) return back();
-  const fields = liveFields(p).sort((a, b) => a.step - b.step);
+  /* opened from the pellet programme: fields filled in, some hidden until test day, a banner on top */
+  const PRE = pre && S.runPre && S.runPre.protocol === p.id ? S.runPre : null;
+  const fields = liveFields(p).filter(f => !(PRE && (PRE.hide || []).includes(f.key))).sort((a, b) => a.step - b.step);
   S.runKeep = S.runKeep && S.runKeep.protocol === p.id ? S.runKeep : { protocol: p.id, values: {}, count: 0, location: "" };
   const K = S.runKeep; const vals = {}; fields.forEach(f => { if (f.keep && K.values[f.key] != null) vals[f.key] = K.values[f.key] });
   /* fields with a starting value (e.g. pellet diameter 10 mm) start there for every sample */
   fields.forEach(f => { if (f.dflt != null) vals[f.key] = String(f.dflt) });
+  if (PRE) { Object.assign(vals, PRE.vals); if (PRE.loc) { K.location = PRE.loc; PRE.loc = null } }
   /* storage works three ways: a mixture keeps a run of spots, a pellet goes into one of its batch's spots, anything else picks a spot */
   const bf = fields.find(f => f.type === "Batch"); const countF = fields.find(f => f.key === "pellets_made" || /^pellets made$/i.test(f.label.trim()));
   const mode = p.kind === "fjhmix" && countF ? "range" : bf ? "batch" : "plain";
@@ -1195,6 +1202,7 @@ VIEWS.run = (view, { id }) => {
   const main = wide ? el("div", { class: "run-main" }) : view, aside = wide ? el("div", { class: "run-aside" }) : null;
   const asideStore = el("div", { class: "stack" }), asideBatch = el("div", { class: "stack" });
   view.append(tools); if (wide) { view.append(el("div", { class: "runwrap" }, main, aside)); aside.append(asideStore) }
+  if (PRE && PRE.banner) main.append(PRE.banner());
   main.append(idRow);
   const form = el("div", { class: "stack", style: "gap:16px" });
   const calcList = el("div", { class: "list" }), calcCard = el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { text: "Calculated" })), calcList);
@@ -1277,7 +1285,7 @@ VIEWS.run = (view, { id }) => {
     const s = sid.value.trim(); if (!s) return toast("Give the sample an ID first", true);
     const day = parseDmy(dt.value); if (!day) return toast("Enter the date as dd/mm/yyyy", true); computeCalc(fields, vals);
     if (day.getTime() > Date.now()) return toast("That date is in the future", true);
-    const missing = fields.filter(f => shown(f, vals) && f.required && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
+    const missing = fields.filter(f => shown(f, vals) && (f.required || (PRE && (PRE.req || []).includes(f.key))) && !vals[f.key]); if (missing.length) return toast(missing.length + (missing.length === 1 ? " required field is" : " required fields are") + " empty: " + missing.map(f => f.label).join(", "), true);
     if (sampleBy(s)) return toast(s + " already exists. Change the ID.", true);
     for (const f of fields) if (shown(f, vals) && f.type === "Number" && vals[f.key] && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number.", true);
     const sum = pctSum(fields, vals); if (sum != null && Math.abs(sum - 100) > 0.01) return toast("Fly ash and carbon add up to " + +sum.toFixed(2) + "% of the solids, not 100%.", true);
@@ -1293,14 +1301,15 @@ VIEWS.run = (view, { id }) => {
     { const sp = solidsPct(fields, vals); if (sp._auto) vals[sp._auto] = String(+sp[sp._auto].toFixed(4)) }
     save.disabled = true; save.textContent = "Saving…";
     const clean = {}; fields.forEach(f => { if (shown(f, vals) && vals[f.key] != null && vals[f.key] !== "") clean[f.key] = (f.type === "Number" || f.type === "Calc") ? num(vals[f.key]) : vals[f.key] });
-    D().samples.push(Object.assign({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() }, where));
+    D().samples.push(Object.assign({ id: uid("s"), sampleId: s, projectId: p.projectId, protocolId: p.id, protocolName: p.name, created: onDay(day), logged: Date.now(), status: "Made", notes: notes.value.trim(), values: clean, updated: Date.now() }, where, PRE && PRE.tag ? clone(PRE.tag) : {}));
     if (st.photos.length) { const ids = []; for (const b of st.photos) ids.push(await storePhoto(b)); D().log.push({ id: uid("g"), when: Date.now(), projectId: p.projectId, title: s + " · " + p.name, note: notes.value.trim(), sampleId: s, photos: ids, updated: Date.now() }) }
     /* where the next one goes: the batch's next free spot, the spot after this mixture's run, or the next spot along */
     if (inRange) K.location = "";
     else if (where.slots) { const nx = nextSlot(where.slots[where.slots.length - 1]); K.location = nx }
     else if (parseSlot(K.location)) { const nx = nextSlot(K.location); if (!nx) toast("That was the last free tray position. Pick where the next one goes.", true); K.location = nx }
     K.elsewhere = false; K.count++; K.date = dmy(day.getTime()) === dmy(Date.now()) ? "" : dmy(day.getTime()); K.values = {}; fields.forEach(f => { if (f.keep && vals[f.key]) K.values[f.key] = vals[f.key] });
-    await persist(); toast("Saved " + s + (where.slots ? " · " + where.location : inRange ? " in " + where.batchSlot : "")); render();
+    await persist(); toast("Saved " + s + (where.slots ? " · " + where.location : inRange ? " in " + where.batchSlot : ""));
+    if (PRE && PRE.after && PRE.after()) return; render();
   };
   main.append(el("div", { class: "sticky-save bar2" }, whereEl, save)); updWhere();
 };
@@ -1508,6 +1517,410 @@ async function syncNow(manual) {
     throw new Error("busy");
   } catch (e) { const c = syncCfg(); if (c) { c.error = syncError(e); await kvPut("vault", await sealObj(S.docs)) } setSyncUI(); if (manual) toast(syncError(e), true) }
   finally { inSync = false }
+}
+
+/* ---------- pellet testing programme ----------
+   Fly ash pellet programme: 5 stages, 31 conditions, one mixture of 10 pellets (8 to test + 2 spares) per condition.
+   A mixture made from the schedule carries s.prog (its condition ID) and s.progDef (the recipe it was made to), so
+   later decisions never rewrite what was already made. Pellets belong to a condition through their mixture batch.
+   State: D().settings.prog = { on, started, d: decisions, t: targets, mixMass, s5 }. LabDash numbering is unchanged. */
+const PROG_DRY = ["Air dry 48 h", "60 °C for 3 h", "110 °C immediately", "110 °C after 24 h"];
+const PROG_REF_DRY = "110 °C after 24 h";
+const PROG_T0 = { strength: 375, R: 1, cv: 0.15, surv: 0.75 };
+const PROG_N = 8, PROG_MAKE = 10, PROG_WATER = 17.5, PROG_DAY = 4;
+const PROG_STAGES = [
+  { n: 1, q: "What compaction window gives strong, intact pellets, and does sieving the ash help?", needs: [], decides: ["S", "Flow"] },
+  { n: 2, q: "How much graphite brings resistance near 1 Ω, and does graphite change the force needed?", needs: ["S", "Flow"], decides: ["Fstar", "G"] },
+  { n: 3, q: "Which drying regime gives the best strength and the most repeatable resistance?", needs: ["S", "Fstar", "G"], decides: ["D"] },
+  { n: 4, q: "How does total carbon trade strength against resistance?", needs: ["S", "Fstar", "G", "D"], decides: ["C"] },
+  { n: 5, q: "Optional: is the chosen recipe reproducible at larger n?", needs: ["S", "Fstar", "G", "D", "C"], decides: [], optional: true }
+];
+/* the order mixtures are made in: each day covers both levels of every factor, so a day-to-day shift can't pose as an effect */
+const PROG_DAYS = {
+  1: [["S1-06", "S1-01", "S1-08", "S1-03"], ["S1-02", "S1-07", "S1-04", "S1-05"]],
+  2: [["S2-05", "S2-01", "S2-08", "S2-04"], ["S2-03", "S2-06", "S2-02", "S2-07"]],
+  3: [["S3-07", "S3-01", "S3-04", "S3-06"], ["S3-02", "S3-08", "S3-05", "S3-03"]],
+  4: [["S4-05", "S4-01", "S4-03"], ["S4-02", "S4-06", "S4-04"]],
+  5: [["S5-01", "S5-01", "S5-01"]]
+};
+const PROG_DEC = {
+  S: { label: "Fly ash particle size S*", after: 1, opts: ["Original", "<125 µm"], hint: "Prefer Original unless <125 µm is clearly better: sieving adds a step, loses the coarse fraction and changes the ash chemistry." },
+  Flow: { label: "Stage 2 low force F_low", after: 1, unit: "N", opts: [2000, 3000, 4000], hint: "Lowest force that passes the strength and survival targets in Stage 1. If that is 5000 N, use 4000 N." },
+  Fstar: { label: "Force F*", after: 2, unit: "N", opts: null, hint: "Lowest force that meets all targets with the chosen graphite level." },
+  G: { label: "Graphite G*", after: 2, unit: "%", opts: [0, 5, 10, 15], hint: "Lowest graphite level that brings resistance near target with CV within limit." },
+  D: { label: "Drying D*", after: 3, opts: PROG_DRY, hint: "Best strength and most repeatable resistance." },
+  C: { label: "Total carbon C*", after: 4, unit: "%", opts: [20, 30, 40], hint: "Used only for the optional Stage 5 confirmation run." }
+};
+const P = () => (D().settings || {}).prog || null;
+const progOn = () => !!(P() && P().on);
+const progT = () => Object.assign({}, PROG_T0, (P() || {}).t || {});
+const progD = () => Object.assign({ Fhigh: 5000 }, (P() || {}).d || {});
+function progConds(d) {
+  d = d || progD(); const out = [];
+  const c = (id, stage, o) => out.push(Object.assign({ id, stage, C: 30, G: 0, size: d.S || null, dry: PROG_REF_DRY, n: PROG_N, mixes: 1, role: "" }, o));
+  const nv = k => d[k] == null || d[k] === "" ? null : +d[k];
+  [2000, 3000, 4000, 5000].forEach((F, i) => c("S1-0" + (i + 1), 1, { size: "Original", F, role: i === 1 ? "Reference mix" : "" }));
+  [2000, 3000, 4000, 5000].forEach((F, i) => c("S1-0" + (i + 5), 1, { size: "<125 µm", F }));
+  const Fl = nv("Flow"), Fh = nv("Fhigh") || 5000, Fs = nv("Fstar"), Gs = nv("G"), Ds = d.D || null;
+  [0, 5, 10, 15].forEach((G, i) => { const a = G ? "" : "Anchor: repeats a Stage 1 condition"; c("S2-0" + (2 * i + 1), 2, { G, F: Fl, role: a }); c("S2-0" + (2 * i + 2), 2, { G, F: Fh, role: a }) });
+  PROG_DRY.forEach((dry, i) => c("S3-0" + (i + 1), 3, { G: 0, F: Fs, dry, role: i === 3 ? "Anchor: repeats a Stage 2 condition" : "" }));
+  PROG_DRY.forEach((dry, i) => c("S3-0" + (i + 5), 3, { G: Gs, F: Fs, dry, role: i === 3 ? "Anchor: repeats a Stage 2 condition" : "" }));
+  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 1), 4, { C, G: 0, F: Fs, dry: Ds, role: C === 30 ? "Anchor: repeats a Stage 3 condition" : "" }));
+  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 4), 4, { C, G: Gs, F: Fs, dry: Ds, role: C === 30 ? "Anchor: repeats a Stage 3 condition" : "" }));
+  c("S5-01", 5, { C: nv("C"), G: Gs, F: Fs, dry: Ds, n: 24, mixes: 3, role: "Confirmation run: Weibull statistics and spares for the first FJH shots" });
+  return out;
+}
+const progCond = (id, d) => progConds(d).find(c => c.id === id);
+const progReady = c => !!c && c.F != null && !!c.size && c.G != null && c.C != null && !!c.dry;
+const progStageReady = st => st.needs.every(k => progD()[k] != null && progD()[k] !== "");
+const progMix = () => D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
+const progMixes = id => D().samples.filter(s => !s.deleted && s.prog === id).sort((a, b) => a.created - b.created);
+const progDefOf = m => Object.assign({}, progCond(m.prog) || {}, m.progDef || {});
+const tsISO = ts => { const d = new Date(ts); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) };
+const isWork = iso => { const w = new Date(iso + "T12:00:00").getDay(); return w !== 0 && w !== 6 };
+const nextWork = iso => { let d = addDays(iso, 1); while (!isWork(d)) d = addDays(d, 1); return d };
+const progStand = dry => ({ "Air dry 48 h": 2, "110 °C after 24 h": 1 })[dry] || 0;
+/* first day the pellets can be tested: the press day plus standing time, moved on to a working day */
+function progTestDay(pressISO, dry) { let d = addDays(pressISO, progStand(dry)); while (!isWork(d)) d = addDays(d, 1); return d }
+function progDryText(dry, short) {
+  return ({ "Air dry 48 h": short ? "Air dry 48 h" : "Leave on the bench for 48 h, then test",
+    "60 °C for 3 h": short ? "60 °C, 3 h" : "Oven at 60 °C for 3 h straight after pressing, then test",
+    "110 °C immediately": short ? "110 °C now, 1 h" : "Oven at 110 °C for 1 h straight after pressing, then test",
+    "110 °C after 24 h": short ? "24 h bench, then 110 °C 1 h" : "Leave on the bench for 24 h, then oven at 110 °C for 1 h, cool, then test" })[dry] || dry || "–";
+}
+function progLabel(c) { if (!c) return ""; const f = v => v == null ? "?" : v;
+  return [c.size || "S*?", "C " + f(c.C) + " %" + (c.G ? " (graphite " + c.G + " %)" : c.G == null ? " (graphite ?)" : ""), f(c.F) + " N", progDryText(c.dry, true)].join(" · ") }
+/* recipe in grams for one mixture: water is % of the total; fly ash, coke and graphite split the solids */
+function progRecipe(c, M) {
+  M = M || +(P() || {}).mixMass || 15; const W = M * PROG_WATER / 100, sol = M - W;
+  return { M, water: W, ash: sol * (100 - c.C) / 100, coke: sol * (c.C - c.G) / 100, graphite: sol * c.G / 100 };
+}
+/* pellet protocol fields the programme needs, found by label so renamed keys still work */
+function progKeys(pp) {
+  const by = re => ((pp && pp.fields) || []).find(f => !f.off && re.test(f.label.trim()));
+  const k = f => f ? f.key : null;
+  return { green: k(by(/^green mass$/i)), mass: k(by(/^mass$/i)), d: k(by(/^diameter$/i)), h: k(by(/^height$/i)), R: k(by(/^resistance$/i)), bf: k(by(/^breaking force$/i)),
+    fail: k(by(/^failure mode$/i)), force: k(compField(liveFields(pp || { fields: [] }))), batch: k(((pp && pp.fields) || []).find(f => f.type === "Batch")) };
+}
+const progTested = (s, K) => num((s.values || {})[K.bf]) > 0;
+const progBreak = r => !/^(used up|spare, not needed|lost)$/i.test(String(r || "").trim());
+const progPending = (s, K) => !progTested(s, K) && !s.removed;
+
+/* ---------- results per condition ---------- */
+const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+const sdev = a => { if (a.length < 2) return NaN; const m = mean(a); return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)) };
+function progStats(id) {
+  const pp = pelletProto(); const K = progKeys(pp); const fields = pp ? pp.fields : [];
+  const o = { mixes: progMixes(id), pressed: 0, broken: 0, tested: 0, waiting: 0, str: [], R: [], dens: [], ml: [], rho: [] };
+  o.mixes.forEach(m => {
+    const pel = pelletsOf(m); o.pressed += pel.length + (m.deformed || 0); o.broken += m.deformed || 0;
+    Object.values(m.gone || {}).forEach(g => { if (progBreak(g.reason)) { o.pressed++; o.broken++ } });
+    pel.forEach(s => { const v = s.values || {};
+      if (s.removed && !progTested(s, K) && progBreak(s.removed.reason)) o.broken++;
+      const r = num(v[K.R]); if (r > 0) o.R.push(r);
+      const dn = derivedNum(fields, v); if (dn.density) o.dens.push(dn.density);
+      const g = num(v[K.green]), m2 = num(v[K.mass]); if (g > 0 && m2 > 0) o.ml.push(100 * (g - m2) / g);
+      const d = num(v[K.d]), h = num(v[K.h]); if (r > 0 && d > 0 && h > 0) o.rho.push(r * Math.PI * d * d / (40 * h));
+      if (progTested(s, K)) { o.tested++; if (dn.strength) o.str.push(dn.strength) } else if (!s.removed) o.waiting++ }) });
+  const T = progT();
+  o.sMean = mean(o.str); o.sSd = sdev(o.str); o.rMean = mean(o.R); o.rSd = sdev(o.R); o.cv = o.R.length >= 2 ? o.rSd / o.rMean : NaN;
+  o.surv = o.pressed ? (o.pressed - o.broken) / o.pressed : NaN;
+  o.okS = isNaN(o.sMean) ? null : o.sMean >= T.strength; o.okCv = isNaN(o.cv) ? null : o.cv <= T.cv; o.okSurv = isNaN(o.surv) ? null : o.surv >= T.surv;
+  o.all = o.okS == null || o.okCv == null || o.okSurv == null ? null : o.okS && o.okCv && o.okSurv;
+  o.rNear = isNaN(o.rMean) ? null : o.rMean <= T.R;
+  return o;
+}
+const progDone = c => progStats(c.id).tested >= c.n;
+const stageConds = n => progConds().filter(c => c.stage === n);
+const stageDone = n => stageConds(n).every(progDone);
+
+/* ---------- suggestions for the stage decisions (they follow the rules on the Decisions sheet) ---------- */
+function progSuggest(k) {
+  const d = progD(), T = progT(), st = id => progStats(id), cs = stageConds;
+  if (k === "S") { const by = sz => cs(1).filter(c => c.size === sz).map(c => st(c.id));
+    const o = by("Original"), f = by("<125 µm"); if (![...o, ...f].some(x => x.tested)) return null;
+    const pass = a => a.filter(x => x.all).length, ms = a => mean(a.map(x => x.sMean).filter(v => !isNaN(v)));
+    const fine = pass(f) > pass(o) && ms(f) > 1.1 * ms(o);
+    return { v: fine ? "<125 µm" : "Original", why: "Original passes " + pass(o) + "/4 forces (mean " + fmtN(ms(o)) + " kPa); <125 µm passes " + pass(f) + "/4 (" + fmtN(ms(f)) + " kPa)." + (fine ? " Sieving is clearly better." : " Sieving isn't clearly better.") } }
+  if (k === "Flow") { if (!d.S) return null; const ok = cs(1).filter(c => c.size === d.S).filter(c => { const x = st(c.id); return x.okS && x.okSurv });
+    if (!ok.length) return { v: null, why: "No force passed both the strength and survival targets at " + d.S + "." };
+    const F = Math.min(...ok.map(c => c.F)); return { v: F === 5000 ? 4000 : F, why: "Lowest force passing strength and survival at " + d.S + ": " + F + " N" + (F === 5000 ? ", so 4000 N per the rule." : ".") } }
+  if (k === "G") { const lv = [0, 5, 10, 15]; const rows = lv.map(G => ({ G, xs: cs(2).filter(c => c.G === G).map(c => st(c.id)) }));
+    if (!rows.some(r => r.xs.some(x => x.R.length))) return null;
+    const hit = rows.find(r => r.xs.some(x => x.rNear && x.okCv)); if (hit) return { v: hit.G, why: "Lowest graphite with mean R ≤ " + T.R + " Ω and CV ≤ " + T.cv * 100 + " % at one of the forces." };
+    const best = rows.filter(r => r.xs.some(x => !isNaN(x.rMean))).sort((a, b) => Math.min(...a.xs.map(x => x.rMean || 1e9)) - Math.min(...b.xs.map(x => x.rMean || 1e9)))[0];
+    return { v: best ? best.G : null, why: "No level reached " + T.R + " Ω with CV in limit; " + (best ? best.G + " % gave the lowest resistance." : "") } }
+  if (k === "Fstar") { if (d.G == null || d.G === "") return null; const xs = cs(2).filter(c => c.G === +d.G).map(c => ({ F: c.F, x: st(c.id) }));
+    const ok = xs.filter(o => o.x.all).sort((a, b) => a.F - b.F)[0];
+    return ok ? { v: ok.F, why: "Lowest force meeting all targets at " + d.G + " % graphite." } : xs.some(o => o.x.tested) ? { v: null, why: "Neither force met every target at " + d.G + " % graphite." } : null }
+  if (k === "D") { const rows = PROG_DRY.map(dry => { const xs = cs(3).filter(c => c.dry === dry).map(c => st(c.id)); return { dry, pass: xs.filter(x => x.all).length, cv: mean(xs.map(x => x.cv).filter(v => !isNaN(v))), s: mean(xs.map(x => x.sMean).filter(v => !isNaN(v))), any: xs.some(x => x.tested) } });
+    if (!rows.some(r => r.any)) return null;
+    rows.sort((a, b) => b.pass - a.pass || (a.cv || 9) - (b.cv || 9) || (b.s || 0) - (a.s || 0));
+    return { v: rows[0].dry, why: rows[0].pass + "/2 mixes meet every target; resistance CV " + (isNaN(rows[0].cv) ? "–" : fmtN(100 * rows[0].cv) + " %") + ", strength " + fmtN(rows[0].s) + " kPa." } }
+  if (k === "C") { const xs = cs(4).filter(c => c.G === +d.G).map(c => ({ C: c.C, x: st(c.id) })); if (!xs.some(o => o.x.tested)) return null;
+    const ok = xs.filter(o => o.x.all).sort((a, b) => Math.abs(a.x.rMean - T.R) - Math.abs(b.x.rMean - T.R) || b.x.sMean - a.x.sMean)[0];
+    return ok ? { v: ok.C, why: "Meets every target with resistance closest to " + T.R + " Ω." } : { v: null, why: "No carbon level met every target." } }
+  return null;
+}
+
+/* ---------- the plan: which mixtures to make on which day ---------- */
+function progEntries() {
+  const P0 = P() || {}; const out = [];
+  PROG_STAGES.forEach(st => { if (st.optional && !P0.s5) return; (PROG_DAYS[st.n] || []).forEach((grp, gi) => {
+    const seen = {}; grp.forEach(id => { const k = seen[id] = (seen[id] || 0) + 1; const mix = progMixes(id)[k - 1] || null;
+      out.push({ id, k, stage: st.n, group: st.n + "." + (gi + 1), day: gi + 1, mix, cond: progCond(id) }) }) }) });
+  return out;
+}
+function progToday() {
+  const E = progEntries(), t = todayISO();
+  const madeToday = E.filter(e => e.mix && tsISO(e.mix.created) === t);
+  const groups = [...new Set(E.map(e => e.group))];
+  const open = groups.find(g => E.some(e => e.group === g && !e.mix));
+  const lastToday = madeToday.length ? madeToday[madeToday.length - 1].group : null;
+  const cur = lastToday && E.some(e => e.group === lastToday && !e.mix) ? lastToday : open;
+  const curE = cur ? E.filter(e => e.group === cur) : [];
+  const stage = curE.length ? PROG_STAGES.find(s => s.n === curE[0].stage) : null;
+  const blocked = stage && !progStageReady(stage) ? stage : null;
+  const dayFull = madeToday.length >= PROG_DAY && cur && !curE.some(e => e.mix && tsISO(e.mix.created) === t);
+  return { E, madeToday, cur, curE, blocked, dayFull, groups };
+}
+/* the days ahead, one session per working day; a stage waits for the previous stage's decisions */
+function progAhead(T0) {
+  const { E, cur, dayFull } = T0; const t = todayISO(); const out = []; let day = isWork(t) && !dayFull ? t : nextWork(t);
+  const groups = [...new Set(E.filter(e => !e.mix || e.group === cur).map(e => e.group))].filter(g => E.some(e => e.group === g && !e.mix));
+  let lastStage = null, lastTest = null;
+  groups.forEach((g, i) => { const es = E.filter(e => e.group === g); const st = es[0].stage;
+    if (lastStage != null && st !== lastStage && !progStageReady(PROG_STAGES.find(s => s.n === st))) {
+      const gd = lastTest && lastTest > day ? lastTest : day; out.push({ gate: st - 1, day: gd }); day = nextWork(gd) }
+    const tests = es.map(e => e.cond ? progTestDay(day, e.cond.dry) : day); const lt = tests.sort().pop();
+    out.push({ group: g, stage: st, day, es, test: lt }); lastStage = st; lastTest = lt; day = nextWork(day) });
+  return out;
+}
+
+/* ---------- presets that open the existing forms filled in ---------- */
+function progMixPreset(e) {
+  const mp = progMix(); const c = e.cond; const keys = new Set((mp.fields || []).map(f => f.key)); const R = progRecipe(c);
+  const v = { total_mass: String(+R.M.toFixed(2)), carbon_type: "Coke", carbon_pct: String(c.C - c.G), graphite_pct: String(c.G), carbon_size: "Original", ash_size: c.size, water_pct: String(PROG_WATER), pellets_made: String(PROG_MAKE),
+    dry1_method: "", dry1_temp: "", dry1_time: "", dry2: "", dry2_method: "", dry2_temp: "", dry2_time: "" };
+  if (c.dry === "Air dry 48 h") Object.assign(v, { dry1_method: "Air", dry1_time: "48" });
+  if (c.dry === "60 °C for 3 h") Object.assign(v, { dry1_method: "Oven", dry1_temp: "60", dry1_time: "3" });
+  if (c.dry === "110 °C immediately") Object.assign(v, { dry1_method: "Oven", dry1_temp: "110", dry1_time: "1" });
+  if (c.dry === PROG_REF_DRY) Object.assign(v, { dry1_method: "Air", dry1_time: "24", dry2: "Second stage drying performed", dry2_method: "Oven", dry2_temp: "110", dry2_time: "1" });
+  Object.keys(v).forEach(k => { if (!keys.has(k)) delete v[k] });
+  const def = { id: c.id, stage: c.stage, size: c.size, C: c.C, G: c.G, F: c.F, dry: c.dry, n: c.n, mixes: c.mixes };
+  return { protocol: mp.id, vals: v, loc: progFreeRun(PROG_MAKE), tag: { prog: c.id, progDef: def },
+    banner: () => progBanner(c, "Mixture " + (c.mixes > 1 ? e.k + " of " + c.mixes + " " : "") + "for " + c.id + ". Check the amounts, pick where the pellets go, then save.", [["Weigh out", progRecipeText(R)]]),
+    after: () => { S.runPre = null; back(); return true } };
+}
+function progPressPreset(mix) {
+  const pp = pelletProto(); const K = progKeys(pp); const c = progDefOf(mix); const v = {};
+  if (K.batch) v[K.batch] = mix.sampleId; if (K.force) v[K.force] = String(c.F);
+  const hide = [K.mass, K.h, K.R, K.bf, K.fail].filter(Boolean);
+  return { protocol: pp.id, vals: v, hide, req: [K.green].filter(Boolean), batch: mix.id,
+    banner: () => { const st = batchStats(mix); const n = st.logged + 1;
+      const b = progBanner(c, "Pellet " + Math.min(n, st.made || PROG_MAKE) + " of " + (st.made || PROG_MAKE) + " from " + mix.sampleId + " (" + PROG_N + " to test + " + ((st.made || PROG_MAKE) - PROG_N) + " spares). Weigh it straight after demoulding.",
+        [["Press at", c.F + " N"], ["Then", progDryText(c.dry)], ["Test on", fmtDay(progTestDay(tsISO(mix.created), c.dry))]]);
+      b.append(el("div", { class: "row between" }, el("span", { class: "fine", text: (mix.deformed ? mix.deformed + " deformed so far. " : "") + "Deformed on demoulding? Count it, then press a replacement." }),
+        el("button", { class: "ghost slim", type: "button", style: "width:auto", text: "Deformed +1", onclick: async () => { mix.deformed = (mix.deformed || 0) + 1; mix.updated = Date.now(); await persist(); toast("Counted 1 deformed pellet for " + mix.sampleId + ". Press a replacement."); render() } })));
+      return b },
+    after: () => { const st = batchStats(mix); if (st.done) { toast("All " + st.made + " pellets from " + mix.sampleId + " are logged. " + progDryText(c.dry, true) + "."); S.runPre = null; back(); return true } return false } };
+}
+function progRecipeText(R) { return ["Fly ash " + R.ash.toFixed(2) + " g", "coke " + R.coke.toFixed(2) + " g", R.graphite > 0 ? "graphite " + R.graphite.toFixed(2) + " g" : null, "water " + R.water.toFixed(2) + " g"].filter(Boolean).join(" · ") + " (" + R.M + " g)" }
+function progBanner(c, msg, rows) {
+  return el("section", { class: "card sec green prog-banner" }, el("div", { class: "sec-head" }, el("h2", { class: "mono", text: "Programme " + c.id }), el("p", { text: progLabel(c) })),
+    el("p", { class: "small", text: msg }), el("dl", { class: "dl2" }, ...(rows || []).map(([k, x]) => el("div", {}, el("dt", { text: k }), el("dd", { text: x })))));
+}
+/* first tray spot with n free spots in a row (same tray) */
+function progFreeRun(n) { const occ = occupancy(); for (const t of trays()) for (const sl of allSlots(t.name)) { if (occ.has(sl)) continue; const r = rangeFrom(sl, n); if (!r.over && r.slots.length === n && r.slots.every(x => !occ.has(x))) return sl } return "" }
+function progFreeSpots() { const occ = occupancy(); return trays().reduce((a, t) => a + allSlots(t.name).filter(sl => !occ.has(sl)).length, 0) }
+function startMix(e) { S.runPre = progMixPreset(e); go("run", { id: S.runPre.protocol, pre: 1 }) }
+function startPress(mix) { S.runPre = progPressPreset(mix); go("run", { id: S.runPre.protocol, pre: 1 }) }
+
+/* ---------- the Programme view ---------- */
+const okMark = v => v == null ? el("span", { class: "muted", text: "–" }) : el("span", { class: v ? "green-t" : "red-t", text: v ? "✓" : "✗" });
+function progMixCard(e, today) {
+  const c = e.cond; const m = e.mix; const card = el("section", { class: "card sec" });
+  const head = el("div", { class: "sec-head" }, el("h2", { class: "mono", text: c.id + (c.mixes > 1 ? " · mix " + e.k + "/" + c.mixes : "") }), el("p", { text: progLabel(c) + (c.role ? " · " + c.role : "") }));
+  card.append(head);
+  if (!m) { const R = progRecipe(c);
+    card.append(el("dl", { class: "dl2" }, ...[["Fly ash (" + c.size + ")", R.ash.toFixed(2) + " g"], ["Coke", R.coke.toFixed(2) + " g"], ["Graphite", R.graphite.toFixed(2) + " g"], ["Water (" + PROG_WATER + " %)", R.water.toFixed(2) + " g"], ["Total", R.M + " g → " + PROG_MAKE + " pellets"], ["Press at", c.F + " N"], ["Drying", progDryText(c.dry)]].map(([k, x]) => el("div", {}, el("dt", { text: k }), el("dd", { text: x })))),
+      today ? el("button", { class: "primary slim", type: "button", text: "1 · Log the mixture", onclick: () => startMix(e) }) : null);
+    return card }
+  const st = batchStats(m); const pp = pelletProto(); const K = progKeys(pp); const pel = pelletsOf(m);
+  const tested = pel.filter(s => progTested(s, K)).length; const testDay = progTestDay(tsISO(m.created), c.dry);
+  card.append(el("div", { class: "kv" }, el("span", { text: m.sampleId + " · " + dmy(m.created) }), el("span", { class: "green-t", text: st.logged + "/" + (st.made || PROG_MAKE) + " pressed · " + tested + " tested" })));
+  if (!st.done) card.append(el("button", { class: "primary slim", type: "button", text: (st.logged ? "2 · Press the next pellet" : "2 · Press pellets") + " (" + c.F + " N)", onclick: () => startPress(m) }));
+  else if (!pel.some(s => progPending(s, K))) card.append(el("p", { class: "fine green-t", text: "Done: " + tested + " pellets tested." }));
+  else card.append(el("p", { class: "fine", text: progDryText(c.dry) + ". Test " + (testDay <= todayISO() ? "today" : "on " + fmtDay(testDay)) + "." }));
+  return card;
+}
+function progTestCard(m) {
+  const c = progDefOf(m); const pp = pelletProto(); const K = progKeys(pp); const pel = pelletsOf(m);
+  const left = pel.filter(s => progPending(s, K)).length, done = pel.filter(s => progTested(s, K)).length;
+  const td = progTestDay(tsISO(m.created), c.dry), late = daysBetween(td, todayISO());
+  return el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { class: "mono", text: m.sampleId + " · " + c.id }), el("p", { text: progLabel(c) })),
+    el("p", { class: "small", text: (c.dry === PROG_REF_DRY ? "Oven at 110 °C for 1 h, cool, then test. " : c.dry === "Air dry 48 h" ? "Bench-dried 48 h; test now. " : "") + done + " tested, " + left + " to go." + (late > 0 ? " Due " + fmtDay(td) + "." : "") }),
+    el("div", { class: "fine", text: "Pressed " + dmy(m.created) + " · " + (m.location || "") }),
+    el("button", { class: "primary slim", type: "button", text: done ? "Carry on testing" : "Test pellets", onclick: () => go("progtest", { mix: m.id }) }));
+}
+VIEWS.prog = view => {
+  const pr = P(); const mp = progMix(), pp = pelletProto();
+  if (!pr || !pr.on) {
+    setTitle("Pellet programme", "Fly ash pellet testing, 5 stages");
+    view.append(el("div", { class: "card stack" }, el("div", { class: "big", text: "Fly ash pellet testing programme" }),
+      el("p", { class: "small", text: "Stages 1–4 (30 conditions) plus an optional Stage 5. One mixture of " + PROG_MAKE + " pellets per condition (" + PROG_N + " to test, the rest spares), up to " + PROG_DAY + " mixtures a day. The schedule tells you what to mix, in grams, what force to press at, how to dry and when to test, and opens your usual forms filled in. Sample and mixture IDs stay as they are." }),
+      !mp || !pp ? el("p", { class: "red-t small", text: "Needs the FJH mixture preparation and FJH pellet protocols." }) :
+        el("button", { class: "primary", type: "button", text: "Start the programme", onclick: async () => { D().settings.prog = Object.assign({ d: { Fhigh: 5000 }, t: {}, mixMass: 15, s5: false }, pr || {}, { on: true, started: pr && pr.started || todayISO(), updated: Date.now() }); await persist(); render() } })));
+    return;
+  }
+  const T0 = progToday(); const stN = T0.curE.length ? T0.curE[0].stage : null;
+  setTitle("Pellet programme", stN ? "Stage " + stN + " · day " + T0.curE[0].day + " of " + PROG_DAYS[stN].length : "All stages made");
+  const K = progKeys(pp);
+  /* 1 · test today: mixtures whose pellets are ready and not all tested */
+  const mixes = D().samples.filter(s => !s.deleted && s.prog).sort((a, b) => a.created - b.created);
+  const ready = [], waiting = [];
+  mixes.forEach(m => { const pel = pelletsOf(m); if (!pel.length || !pel.some(s => progPending(s, K))) return; const c = progDefOf(m); const td = progTestDay(tsISO(m.created), c.dry);
+    (td <= todayISO() ? ready : waiting).push({ m, td }) });
+  view.append(el("div", { class: "eyebrow", style: "margin:4px 0 -4px", text: "Today · " + fmtDay(todayISO()) }));
+  if (ready.length) { view.append(el("h3", { class: "prog-h", text: "Test" })); ready.forEach(r => view.append(progTestCard(r.m))) }
+  /* 2 · make today */
+  view.append(el("h3", { class: "prog-h", text: "Make" }));
+  if (T0.blocked) view.append(el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { text: "Stage " + T0.blocked.n + " waits for decisions" })),
+    el("p", { class: "small", text: "Enter the Stage " + (T0.blocked.n - 1) + " choices below (" + T0.blocked.needs.filter(k => progD()[k] == null || progD()[k] === "").map(k => PROG_DEC[k].label).join(", ") + ") and the Stage " + T0.blocked.n + " mixtures appear here." })));
+  else if (!T0.cur) view.append(el("p", { class: "empty", text: "Every mixture in the programme is made." + (pr.s5 ? "" : " Stage 5 is switched off in the settings below.") }));
+  else if (T0.dayFull && !S.progEarly) { view.append(el("p", { class: "small muted", text: "Today's " + T0.madeToday.length + " mixtures are made. Press any pellets still to go; the next session is in the plan below." }));
+    T0.madeToday.forEach(e => view.append(progMixCard(e, true)));
+    view.append(el("button", { class: "ghost slim", type: "button", text: "Start the next session now (" + T0.curE.map(e => e.id).join(", ") + ")", onclick: () => { S.progEarly = true; render() } })) }
+  else {
+    const need = T0.curE.filter(e => !e.mix).length * PROG_MAKE, free = progFreeSpots();
+    if (need > free) view.append(el("p", { class: "fine amber-t", text: "Only " + free + " free tray spots for " + need + " pellets. Mark tested pellets Used up, or add a tray in Settings → Storage." }));
+    view.append(el("p", { class: "fine", text: "Make them in this order: " + T0.curE.map(e => e.id).join(" → ") + ". Log each mixture, press its " + PROG_MAKE + " pellets, then the next." }));
+    T0.curE.forEach(e => view.append(progMixCard(e, true)));
+  }
+  if (waiting.length) view.append(el("div", { class: "card list" }, el("div", { class: "eyebrow", text: "Standing or drying (" + waiting.length + ")" }),
+    ...waiting.map(w => el("div", { class: "kv" }, el("span", { text: w.m.sampleId + " · " + w.m.prog }), el("span", { text: "test " + fmtDay(w.td) })))));
+  /* 3 · decisions */
+  PROG_STAGES.forEach(st => { if (!st.decides.length) return; const keys = st.decides; const d = progD();
+    const made = stageConds(st.n).some(c => progMixes(c.id).length); if (!made) return;
+    const allSet = keys.every(k => d[k] != null && d[k] !== ""); const complete = stageDone(st.n);
+    const card = el("div", { class: "card stack", "data-foldkey": "dec" + st.n }, el("div", { class: "eyebrow", text: "Stage " + st.n + " decisions" + (allSet ? " · set" : complete ? " · ready" : " · " + stageConds(st.n).filter(progDone).length + "/" + stageConds(st.n).length + " conditions tested") }));
+    if (!complete) card.append(el("p", { class: "fine amber-t", text: "Not every Stage " + st.n + " condition has " + PROG_N + " tested pellets yet. Suggestions use what's there." }));
+    keys.forEach(k => { const D0 = PROG_DEC[k]; const sg = progSuggest(k);
+      const opts = D0.opts || (k === "Fstar" ? [d.Flow, d.Fhigh || 5000].filter(v => v != null && v !== "").map(Number) : []);
+      const ch = el("div", { class: "chips wrap" }); opts.forEach(o => ch.append(el("button", { class: "chip", type: "button", "aria-pressed": String(String(d[k]) === String(o)), text: o + (D0.unit ? " " + D0.unit : ""),
+        onclick: async () => { await progSetDecision(k, String(d[k]) === String(o) ? null : o) } })));
+      card.append(el("div", { class: "stack", style: "gap:6px" }, el("div", { class: "small", style: "font-weight:600", text: D0.label }), ch,
+        sg ? el("div", { class: "fine" }, sg.v != null ? el("span", { class: "green-t", text: "Suggested: " + sg.v + (D0.unit ? " " + D0.unit : "") + ". " }) : null, sg.why || "") : null,
+        el("div", { class: "fine muted", text: D0.hint }))) });
+    view.append(card) });
+  /* 4 · the days ahead */
+  const ahead = progAhead(T0);
+  if (ahead.length) view.append(el("div", { class: "card list", "data-foldkey": "ahead" }, el("div", { class: "eyebrow", text: "Plan ahead" }),
+    ...ahead.map(a => a.gate ? el("div", { class: "kv" }, el("span", { class: "amber-t", text: fmtDay(a.day) }), el("span", { class: "amber-t", text: "Stage " + a.gate + " decisions" }))
+      : el("div", { class: "kv" }, el("span", { text: fmtDay(a.day) + " · Stage " + a.stage + " day " + a.group.split(".")[1] }), el("span", { text: a.es.map(e => e.id.slice(3)).join(" ") + " · test " + fmtDay(a.test).replace(/^\w+ /, "") }))),
+    el("p", { class: "fine", text: "One session per working day, " + PROG_DAY + " mixtures each. Dates move as you go." })));
+  /* 5 · results by condition */
+  PROG_STAGES.forEach(st => { if (st.optional && !pr.s5) return; const cs = stageConds(st.n);
+    if (!cs.some(c => progMixes(c.id).length)) return;
+    const tb = el("table", { class: "ptab" }, el("thead", {}, el("tr", {}, ...["", "n", "Strength kPa", "R Ω", "CV", "Surv", "S", "CV", "Sv", "All"].map(h => el("th", { text: h })))));
+    const body = el("tbody"); cs.forEach(c => { const x = progStats(c.id);
+      body.append(el("tr", {}, el("td", { class: "mono", title: progLabel(c), text: c.id }), el("td", { text: x.tested + "/" + c.n }),
+        el("td", { text: isNaN(x.sMean) ? "–" : fmtN(x.sMean) + (isNaN(x.sSd) ? "" : " ±" + fmtN(x.sSd)) }), el("td", { class: x.rNear ? "green-t" : "", text: isNaN(x.rMean) ? "–" : fmtN(x.rMean) }),
+        el("td", { text: isNaN(x.cv) ? "–" : fmtN(100 * x.cv) + "%" }), el("td", { text: isNaN(x.surv) ? "–" : fmtN(100 * x.surv) + "%" }),
+        el("td", {}, okMark(x.okS)), el("td", {}, okMark(x.okCv)), el("td", {}, okMark(x.okSurv)), el("td", {}, okMark(x.all)))) });
+    tb.append(body);
+    const T = progT();
+    view.append(el("div", { class: "card stack", "data-foldkey": "res" + st.n }, el("div", { class: "eyebrow", text: "Stage " + st.n + " results" }),
+      el("p", { class: "fine", text: st.q }), el("div", { class: "tscroll" }, tb),
+      el("p", { class: "fine", text: "Targets: strength ≥ " + T.strength + " kPa, resistance CV ≤ " + 100 * T.cv + " %, survival ≥ " + 100 * T.surv + " %. Green R is at or under " + T.R + " Ω. Pellets from one mixture are repeat measurements of that mix, not independent samples: use the anchors to judge mix-to-mix scatter." }))) });
+  /* 6 · settings */
+  const T = progT(); const tIn = (k, lbl, unit, scale) => { const inp = el("input", { type: "text", inputmode: "decimal", value: String(+(T[k] * (scale || 1)).toFixed(3)) });
+    inp.addEventListener("change", async () => { const v = num(inp.value); if (!(v > 0)) return toast(lbl + " needs a number", true); pr.t = Object.assign({}, pr.t, { [k]: v / (scale || 1) }); pr.updated = Date.now(); await persist(); toast(lbl + " set") });
+    return el("div", { class: "field half" }, el("div", { class: "lab" }, el("span", { text: lbl })), el("div", { class: "unitbox" }, inp, el("span", { class: "u", text: unit }))) };
+  const mm = el("input", { type: "text", inputmode: "decimal", value: String(pr.mixMass || 15) });
+  mm.addEventListener("change", async () => { const v = num(mm.value); if (!(v > 0)) return toast("Mixture mass needs a number", true); pr.mixMass = v; pr.updated = Date.now(); await persist(); render() });
+  view.append(el("div", { class: "card stack", "data-foldkey": "set" }, el("div", { class: "eyebrow", text: "Programme settings" }),
+    el("div", { class: "fgrid" }, tIn("strength", "Min. strength", "kPa"), tIn("R", "Target resistance", "Ω"), tIn("cv", "Max. resistance CV", "%", 100), tIn("surv", "Min. survival", "%", 100),
+      el("div", { class: "field half" }, el("div", { class: "lab" }, el("span", { text: "Mixture size" })), el("div", { class: "unitbox" }, mm, el("span", { class: "u", text: "g" })))),
+    el("p", { class: "fine", text: "Mixture size is the total mass, water included, for " + PROG_MAKE + " pellets. Raise it if you run short." }),
+    el("button", { class: "ghost slim", type: "button", text: pr.s5 ? "Stage 5 is on · switch off" : "Stage 5 is off · switch on", onclick: async () => { pr.s5 = !pr.s5; pr.updated = Date.now(); await persist(); render() } }),
+    confirmBtn("ghost slim", "Pause the programme", "Tap again to pause (nothing is deleted)", async () => { pr.on = false; pr.updated = Date.now(); await persist(); render() })));
+};
+async function progSetDecision(k, v) {
+  const pr = P(); const d = Object.assign({}, pr.d); const later = PROG_STAGES.filter(st => st.needs.includes(k));
+  const used = later.flatMap(st => stageConds(st.n)).filter(c => progMixes(c.id).length);
+  if (used.length && !S.decArm) { S.decArm = k; return toast(used.length + " later mixtures were already made with the old value; they keep it. Tap again to change.", true) }
+  S.decArm = null; if (v == null) delete d[k]; else d[k] = v; pr.d = d; pr.updated = Date.now(); await persist(); render();
+}
+
+/* ---------- test the pellets of one mixture, one at a time ---------- */
+VIEWS.progtest = (view, { mix }) => {
+  const B = D().samples.find(x => x.id === mix); const pp = pelletProto(); if (!B || !pp) return back();
+  const K = progKeys(pp); const c = progDefOf(B); const pel = pelletsOf(B).sort(byIdNum);
+  const todo = pel.filter(s => progPending(s, K)); const done = pel.filter(s => progTested(s, K));
+  let cur = (S.ptCur && todo.find(s => s.id === S.ptCur)) || todo[0];
+  setTitle("Test " + B.sampleId, c.id + " · " + done.length + " of " + pel.length + " tested");
+  view.append(progBanner(c, c.dry === PROG_REF_DRY ? "Out of the oven (110 °C, 1 h) and cooled? Weigh and measure, then resistance, then crush. Resistance first: crushing destroys the pellet." : "Weigh and measure, then resistance, then crush. Resistance first: crushing destroys the pellet.", []));
+  const chips = el("div", { class: "chips wrap" });
+  pel.forEach(s => { const t = progTested(s, K); chips.append(el("button", { class: "chip" + (t || s.removed ? " taken" : ""), type: "button", "aria-pressed": String(cur && s.id === cur.id), text: shortNum(s) + (t ? " ✓" : s.removed ? " · " + s.removed.reason : ""),
+    onclick: () => { if (t || s.removed) return go("sample", { id: s.id }); S.ptCur = s.id; render() } })) });
+  view.append(el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { text: "Pellets" }), el("p", { text: "Tap one to test it out of order" })), chips));
+  if (done.length >= PROG_N && todo.length) view.append(el("section", { class: "card sec green" }, el("div", { class: "sec-head" }, el("h2", { text: PROG_N + " tested · target reached" })),
+    el("p", { class: "small", text: todo.length + (todo.length === 1 ? " spare is" : " spares are") + " left: " + todo.map(s => s.sampleId).join(", ") + ". Test them too, or set them aside." }),
+    el("button", { class: "ghost slim", type: "button", text: "Mark the spares not needed", onclick: async () => { todo.forEach(s => removeSample(s, "Spare, not needed")); await persist(); toast(todo.length + " spares marked not needed"); back() } })));
+  if (!cur) { view.append(el("p", { class: "empty", text: "Every pellet from " + B.sampleId + " is tested or set aside." }), el("button", { class: "ghost", type: "button", text: "Back to the programme", onclick: () => go("prog", {}, true) })); return }
+  const fields = [K.mass, K.d, K.h, K.R, K.bf, K.fail].map(k => pp.fields.find(f => f.key === k)).filter(Boolean);
+  const vals = Object.assign({}, cur.values || {}); const calc = el("div", { class: "list" });
+  const upd = () => { const v = vals; const rows = []; const g = num(v[K.green]), m = num(v[K.mass]), d = num(v[K.d]), h = num(v[K.h]), r = num(v[K.R]);
+    if (g > 0) rows.push(["Green mass", g + " g"]); if (g > 0 && m > 0) rows.push(["Mass loss on drying", fmtN(100 * (g - m) / g) + " %"]);
+    if (r > 0 && d > 0 && h > 0) rows.push(["Resistivity", fmtN(r * Math.PI * d * d / (40 * h)) + " Ω·cm"]);
+    derivedFor(pp.fields, v).filter(([k]) => !/pressure/i.test(k)).forEach(x => rows.push(x));
+    calc.replaceChildren(...rows.map(([k, x]) => el("div", { class: "kv" }, el("span", { text: k }), el("span", { text: x })))) };
+  const grid = el("div", { class: "fgrid" });
+  const draw = () => grid.replaceChildren(...fields.map(f => { const w = el("div", { class: "field" + (unitInBox(f) ? " half" : "") }, el("div", { class: "lab" }, fieldLabel(f)), fieldInput(f, vals, r => r ? draw() : upd(), fields)); return w })); draw();
+  const notes = el("textarea", { placeholder: "Notes (where/how it broke)", style: "min-height:60px", "aria-label": "Notes" }); notes.value = cur.notes || "";
+  let usedUp = true; const uu = el("button", { class: "chip", type: "button", "aria-pressed": "true", text: "☑ Crushed pellet goes to Used up (frees its spot)" });
+  uu.onclick = () => { usedUp = !usedUp; uu.setAttribute("aria-pressed", String(usedUp)); uu.textContent = (usedUp ? "☑ " : "☐ ") + "Crushed pellet goes to Used up (frees its spot)" };
+  view.append(el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { class: "mono", text: cur.sampleId }), el("p", { text: (cur.location || "") + " · pressed " + dmy(cur.created) })), grid, calc, notes, el("div", { class: "chips wrap" }, uu)));
+  const save = el("button", { class: "primary", type: "button", text: "Save " + cur.sampleId + " and next" });
+  save.onclick = async () => {
+    for (const f of fields) if (f.type === "Number" && vals[f.key] !== "" && vals[f.key] != null && isNaN(num(vals[f.key]))) return toast(f.label + " isn't a number", true);
+    const clean = Object.assign({}, cur.values || {}); fields.forEach(f => { const v = vals[f.key]; if (v != null && v !== "") clean[f.key] = f.type === "Number" ? num(v) : v; else delete clean[f.key] });
+    cur.values = clean; cur.notes = notes.value.trim(); cur.status = progTested(cur, K) ? "Tested" : cur.status; cur.updated = Date.now(); cur.edited = Date.now();
+    if (progTested(cur, K) && usedUp) removeSample(cur, "Used up");
+    S.ptCur = null; await persist(); toast("Saved " + cur.sampleId); render();
+  };
+  view.append(el("div", { class: "two" }, el("button", { class: "ghost", type: "button", text: "Broke before testing…", onclick: () => sheet(cur.sampleId + " didn't survive", el("div", { class: "stack" }, el("p", { class: "small", text: "It stays in the log and counts against survival." }),
+    (() => { const c2 = el("div", { class: "chips wrap" }); emptyReasons().filter(r => r !== "Used up" && !/spare/i.test(r)).forEach(r => c2.append(el("button", { class: "chip", type: "button", text: r,
+      onclick: async () => { removeSample(cur, r); S.ptCur = null; await persist(); closeSheet(); toast(cur.sampleId + " · " + r); render() } }))); return c2 })(), el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet }))) }),
+    el("button", { class: "ghost", type: "button", text: "Skip for now", onclick: () => { const i = todo.indexOf(cur); S.ptCur = (todo[i + 1] || todo[0]).id; render() } })));
+  view.append(el("div", { class: "sticky-save bar2" }, el("div", { class: "where", text: todo.length + " left in " + B.sampleId }), save)); upd();
+};
+/* a card on Home and in Lab mode */
+function progHomeCard() {
+  if (!progOn()) return null; const T0 = progToday(); const pp = pelletProto(); const K = progKeys(pp);
+  const nTest = D().samples.filter(s => !s.deleted && s.prog).filter(m => { const c = progDefOf(m); return pelletsOf(m).some(s => progPending(s, K)) && progTestDay(tsISO(m.created), c.dry) <= todayISO() }).length;
+  const nMake = T0.blocked || (T0.dayFull && !S.progEarly) ? 0 : T0.curE.filter(e => !e.mix).length;
+  const sub = [nTest ? nTest + " to test" : "", nMake ? nMake + " to make" : "", T0.blocked ? "Stage " + T0.blocked.n + " waits for decisions" : ""].filter(Boolean).join(" · ") || "Nothing due today";
+  return el("button", { class: "tapcard weekbtn", type: "button", onclick: () => go("prog", {}, true) }, el("span", { class: "big", text: "📅 Pellet programme" }), el("span", { class: "muted small", text: sub + " ›" }));
+}
+/* fields the programme adds: graphite and fly ash size on the mixture, the same two plus green mass on the pellet */
+function progMigrate() {
+  const st = D().settings; if (st.progV1) return false; const mp = progMix(), pp = pelletProto(); if (!mp || !pp) return false;
+  const F = (key, step, section, label, type, unit, extra) => Object.assign({ key, step, section, label, type, unit: unit || "", options: [], required: false, keep: false, hint: "" }, extra || {});
+  const after = (p, key) => { const f = p.fields.find(x => x.key === key); return f ? f.step : 0 };
+  const has = (p, re) => p.fields.some(f => re.test(f.label.trim()));
+  if (!mp.fields.some(f => f.key === "graphite_pct")) mp.fields.push(F("graphite_pct", after(mp, "carbon_pct") + 0.1, "Mixture", "Graphite", "Number", "%", { pctOf: "dry", hint: "% of the solids, as well as the carbon above. Leave blank for none" }));
+  if (!mp.fields.some(f => f.key === "ash_size")) mp.fields.push(F("ash_size", after(mp, "carbon_size") + 0.1, "Mixture", "Fly ash particle size", "Choice", "", { options: ["Original", "<125 µm"] }));
+  mp.updated = Date.now();
+  const pf = (re) => pp.fields.find(f => re.test(f.label.trim()));
+  const ac = pf(/^additive content$/i), cs = pf(/particle size/i), ms = pf(/^mass$/i); const sec = f => f ? f.section : "";
+  if (!has(pp, /^graphite$/i)) pp.fields.push(F(uid("f"), (ac ? ac.step : 0) + 0.1, sec(ac), "Graphite", "Number", "%", { keep: true, hint: "% of the solids (from the batch)" }));
+  if (!has(pp, /^fly ash particle size$/i)) pp.fields.push(F(uid("f"), (cs ? cs.step : 0) + 0.1, sec(cs), "Fly ash particle size", "Choice", "", { options: ["Original", "<125 µm"], keep: true }));
+  if (!has(pp, /^green mass$/i)) pp.fields.push(F(uid("f"), (ms ? ms.step : 0) - 0.1, sec(ms), "Green mass", "Number", "g", { hint: "Straight after demoulding, before drying" }));
+  if (ms && !ms.hint) ms.hint = "After drying";
+  const bf = pp.fields.find(f => f.type === "Batch"); if (bf) bf.map = Object.assign({}, bf.map, { "graphite": "graphite_pct", "fly ash particle size": "ash_size" });
+  pp.updated = Date.now(); st.progV1 = true; return true;
 }
 
 boot();

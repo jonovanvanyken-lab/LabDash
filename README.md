@@ -1,6 +1,6 @@
 # LabDash
 
-A private lab notebook that runs on your phone: projects, tasks and deadlines, a photo and notes log, and a lab mode that walks you through a protocol and records each sample's measurements with an automatic, per-project sample ID.
+A private lab notebook that runs on your phone: projects, tasks and deadlines, a photo and notes log, and a lab mode that walks you through a protocol and records each sample's measurements with an automatic, per-project sample ID. A pellet programme schedule (Lab mode → Pellet programme) lays out each day's mixtures, pressing and testing for the fly ash pellet study.
 
 **This repository holds only the app's code. It contains no data.**
 

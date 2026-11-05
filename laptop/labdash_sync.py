@@ -200,6 +200,73 @@ def clean_cell(x):
     return x
 
 
+def programme_sheets(docs, samples, protos, sheet):
+    """Pellet programme: one row per pellet with its condition, and a summary per condition.
+    Mixtures made from the schedule carry 'prog' (condition ID) and 'progDef' (the recipe)."""
+    import math
+    import statistics as stx
+    mixes = [s for s in samples if s.get("prog")]
+    if not mixes:
+        return
+    by_id = {m["sampleId"]: m for m in mixes}
+
+    def fnum(v):
+        try:
+            return float(str(v).replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+    rows, per = [], {}
+    for p in samples:
+        pr = protos.get(p.get("protocolId")) or {}
+        bf = next((f for f in pr.get("fields", []) if f.get("type") == "Batch"), None)
+        mix = by_id.get((p.get("values") or {}).get(bf["key"])) if bf else None
+        if not mix:
+            continue
+        fields = pr.get("fields", [])
+        lab = {f["label"].strip().lower(): f["key"] for f in fields}
+        v = p.get("values") or {}
+        g = lambda name: fnum(v.get(lab.get(name, ""), None))
+        cf = comp_field(fields)
+        d = mix.get("progDef") or {}
+        green, mass, dia, hgt, res, brk = g("green mass"), g("mass"), g("diameter"), g("height"), g("resistance"), g("breaking force")
+        dens, stren = derived(fields, v)
+        loss = round(100 * (green - mass) / green, 2) if green and mass else None
+        rho = round(res * math.pi * dia ** 2 / (40 * hgt), 4) if res and dia and hgt else None
+        rem = (p.get("removed") or {}).get("reason", "")
+        rows.append([p["sampleId"], mix["prog"], d.get("stage"), mix["sampleId"], d.get("size"), d.get("C"), d.get("G"),
+                     (d.get("C") or 0) - (d.get("G") or 0) if d.get("C") is not None else None, fnum(v.get(cf["key"])) if cf else None, d.get("dry"),
+                     made_day(p.get("created")), green, mass, dia, hgt, res, brk, v.get(lab.get("failure mode", ""), ""), loss, dens, rho, stren,
+                     rem, p.get("notes", "")])
+        c = per.setdefault(mix["prog"], {"stage": d.get("stage"), "mixes": set(), "made": 0, "broken": 0, "str": [], "R": []})
+        c["mixes"].add(mix["sampleId"])
+        c["made"] += 1
+        if rem and not brk and rem.lower() not in ("used up", "spare, not needed", "lost"):
+            c["broken"] += 1
+        if stren:
+            c["str"].append(stren)
+        if res:
+            c["R"].append(res)
+    for m in mixes:  # pellets counted as deformed on demoulding, before they were logged
+        c = per.get(m["prog"])
+        if c and m.get("deformed"):
+            c["made"] += m["deformed"]
+            c["broken"] += m["deformed"]
+    rows.sort(key=lambda r: (r[1], r[0]))
+    sheet("Programme", ["Pellet", "Condition", "Stage", "Mixture", "Fly ash size", "Total carbon (%)", "Graphite (%)", "Coke (%)", "Force (N)", "Drying",
+                        "Pressed", "Green mass (g)", "Dry mass (g)", "Dry D (mm)", "Dry H (mm)", "Resistance (Ω)", "Breaking force (N)", "Failure mode",
+                        "Mass loss on drying (%)", "Dry density (g/cm³)", "Resistivity (Ω·cm)", "Axial strength (kPa)", "Removed", "Notes"], rows)
+    sd = lambda a: round(stx.stdev(a), 3) if len(a) > 1 else None
+    mn = lambda a: round(stx.mean(a), 3) if a else None
+    srows = []
+    for cid in sorted(per):
+        c = per[cid]
+        rm, rs = mn(c["R"]), sd(c["R"])
+        srows.append([cid, c["stage"], ", ".join(sorted(c["mixes"])), c["made"], round((c["made"] - c["broken"]) / c["made"], 3) if c["made"] else None,
+                      len(c["str"]), mn(c["str"]), sd(c["str"]), len(c["R"]), rm, rs, round(rs / rm, 3) if rm and rs else None])
+    sheet("Programme summary", ["Condition", "Stage", "Mixtures", "Pressed", "Survival", "n crushed", "Mean strength (kPa)", "SD strength (kPa)",
+                                "n resistance", "Mean R (Ω)", "SD R (Ω)", "CV R"], srows)
+
+
 def write_workbook(docs, path):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
@@ -293,6 +360,10 @@ def write_workbook(docs, path):
                     ws.cell(row=r, column=4 + i).fill = amber
       except Exception as e:  # one odd protocol shouldn't stop the whole workbook
         log(f"Skipped the sheet for protocol {pr.get('name')!r}: {e!r}")
+    try:
+        programme_sheets(docs, samples, protos, sheet)
+    except Exception as e:  # never let the programme sheet stop the rest of the workbook
+        log(f"Skipped the Programme sheet: {e!r}")
     sheet("Links", ["Project", "Name", "Link", "Added"],
           [[p["name"], k.get("title", ""), k.get("url", ""), when(k.get("added"))] for p in projects.values() for k in p.get("links") or []])
     for ws in wb.worksheets:
