@@ -301,10 +301,13 @@ def programme_sheets(docs, samples, protos, sheet):
         loss = round(100 * (green - mass) / green, 2) if green and mass else None
         rho = round(res * math.pi * dia ** 2 / (40 * hgt), 4) if res and dia and hgt else None
         rem = (p.get("removed") or {}).get("reason", "")
-        rows.append([p["sampleId"], mix["prog"], d.get("stage"), mix["sampleId"], d.get("size"), d.get("C"), d.get("G"),
+        off = mix.get("progOff")
+        rows.append([p["sampleId"], mix["prog"] + (" (not counted)" if off else ""), d.get("stage"), mix["sampleId"], d.get("size"), d.get("C"), d.get("G"),
                      (d.get("C") or 0) - (d.get("G") or 0) if d.get("C") is not None else None, fnum(v.get(cf["key"])) if cf else None, d.get("dry"),
                      made_day(p.get("created")), green, mass, dia, hgt, res, brk, v.get(lab.get("failure mode", ""), ""), loss, dens, rho, stren,
                      rem, p.get("notes", "")])
+        if off:  # made wrong: in the pellet list, not in the condition's results
+            continue
         c = per.setdefault(mix["prog"], {"stage": d.get("stage"), "mixes": set(), "made": 0, "broken": 0, "str": [], "R": []})
         c["mixes"].add(mix["sampleId"])
         c["made"] += 1
@@ -316,7 +319,7 @@ def programme_sheets(docs, samples, protos, sheet):
             c["R"].append(res)
     for m in mixes:  # pellets counted as deformed on demoulding, before they were logged
         c = per.get(m["prog"])
-        if c and m.get("deformed"):
+        if c and m.get("deformed") and not m.get("progOff"):
             c["made"] += m["deformed"]
             c["broken"] += m["deformed"]
     rows.sort(key=lambda r: (r[1], r[0]))

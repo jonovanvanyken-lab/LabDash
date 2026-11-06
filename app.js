@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.23";
-const WHATS_NEW = "Stock mixtures record carbon particle size (Original or <125 µm), and mixtures made from them pick it up";
+const APP_VERSION = "1.24";
+const WHATS_NEW = "Pellet programme: mark a mixture as made wrong, correct it and copy the fix to its pellets; the condition goes back on the list to remake";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -1681,7 +1681,7 @@ const progReady = c => !!c && c.F != null && !!c.size && c.G != null && c.C != n
 const progStageReady = st => st.needs.every(k => progD()[k] != null && progD()[k] !== "");
 const progMix = () => D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
 /* a mixture counts for its condition only if it was made to the condition's current recipe */
-const progMatch = (m, c) => { const d = m.progDef; return !d || !c || ["size", "C", "G", "F", "dry"].every(k => String(d[k]) === String(c[k])) };
+const progMatch = (m, c) => { if (m.progOff) return false; const d = m.progDef; return !d || !c || ["size", "C", "G", "F", "dry"].every(k => String(d[k]) === String(c[k])) };
 const progMixes = id => { const c = progCond(id); return D().samples.filter(s => !s.deleted && s.prog === id && progMatch(s, c)).sort((a, b) => a.created - b.created) };
 const progOld = () => D().samples.filter(s => !s.deleted && s.prog && !progMatch(s, progCond(s.prog)));
 const progDefOf = m => Object.assign({}, progCond(m.prog) || {}, m.progDef || {});
@@ -1866,16 +1866,36 @@ function progMixCard(e, today) {
   if (!st.done) card.append(el("button", { class: "primary slim", type: "button", text: (st.logged ? "2 · Press the next pellet" : "2 · Press pellets") + " (" + c.F + " N)", onclick: () => startPress(m) }));
   else if (!pel.some(s => progPending(s, K))) card.append(el("p", { class: "fine green-t", text: "Done: " + tested + " pellets tested." }));
   else card.append(el("p", { class: "fine", text: progDryText(c.dry) + ". Test " + (testDay <= todayISO() ? "today" : "on " + fmtDay(testDay)) + "." }));
+  card.append(el("button", { class: "link", type: "button", style: "align-self:flex-start", text: "Made wrong?", onclick: () => progMadeWrong(m) }));
   return card;
 }
 function progTestCard(m) {
   const c = progDefOf(m); const pp = pelletProto(); const K = progKeys(pp); const pel = pelletsOf(m);
   const left = pel.filter(s => progPending(s, K)).length, done = pel.filter(s => progTested(s, K)).length;
   const td = progTestDay(tsISO(m.created), c.dry), late = daysBetween(td, todayISO());
-  return el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { class: "mono", text: m.sampleId + " · " + c.id }), el("p", { text: progLabel(c) })),
+  return el("section", { class: "card sec" }, el("div", { class: "sec-head" }, el("h2", { class: "mono", text: m.sampleId + " · " + c.id + (m.progOff ? " · not counted" : "") }), el("p", { text: m.progOff ? m.progOff.reason : progLabel(c) })),
     el("p", { class: "small", text: (c.dry === PROG_REF_DRY ? "Oven at 110 °C for 1 h, cool, then test. " : c.dry === "Air dry 48 h" ? "Bench-dried 48 h; test now. " : "") + done + " tested, " + left + " to go." + (late > 0 ? " Due " + fmtDay(td) + "." : "") }),
     el("div", { class: "fine", text: "Pressed " + dmy(m.created) + " · " + (m.location || "") }),
-    el("button", { class: "primary slim", type: "button", text: done ? "Carry on testing" : "Test pellets", onclick: () => go("progtest", { mix: m.id }) }));
+    el("button", { class: "primary slim", type: "button", text: done ? "Carry on testing" : "Test pellets", onclick: () => go("progtest", { mix: m.id }) }),
+    m.progOff ? null : el("button", { class: "link", type: "button", style: "align-self:flex-start", text: "Made wrong?", onclick: () => progMadeWrong(m) }));
+}
+/* a programme mixture that wasn't made to its recipe: out of the count, its pellets still testable */
+function progMadeWrong(m) {
+  const note = el("textarea", { placeholder: "What went wrong (e.g. sieved coke used on its own, no fly ash)", style: "min-height:70px" });
+  sheet(m.sampleId + " made wrong?", el("div", { class: "stack" },
+    el("p", { class: "small", text: "It stops counting for " + m.prog + ", which goes back on the list to remake. Its pellets stay in the log and you can still test them. Next you'll correct what actually went in." }), note,
+    el("button", { class: "primary", type: "button", text: "Take it out of the programme", onclick: async () => {
+      m.progOff = { reason: note.value.trim() || "Made wrong", at: Date.now() }; m.notes = [m.notes, "Not counted for " + m.prog + ": " + m.progOff.reason].filter(Boolean).join("\n"); m.updated = Date.now();
+      await persist(); closeSheet(); toast(m.prog + " is back on the list. Now correct what went into " + m.sampleId + "."); editSample(m) } }),
+    el("button", { class: "link", type: "button", text: "Cancel", onclick: closeSheet })));
+}
+/* copy a corrected mixture's make-up onto its pellets */
+async function progRepush(m) {
+  const pp = pelletProto(); const bf = pp && pp.fields.find(f => f.type === "Batch"); if (!bf) return; let n = 0;
+  pelletsOf(m).forEach(s => { const bv = batchValues(bf, pp.fields, m.sampleId); if (!bv) return; s.values = Object.assign({}, s.values || {});
+    Object.entries(bv).forEach(([k, v]) => { const f = pp.fields.find(x => x.key === k); if (v === "" || v == null) delete s.values[k]; else s.values[k] = f && f.type === "Number" ? num(v) : v });
+    delete s.batchDiff; s.updated = Date.now(); n++ });
+  await persist(); toast("Updated " + n + " pellets from " + m.sampleId); render();
 }
 VIEWS.prog = view => {
   const pr = P(); const mp = progMix(), pp = pelletProto();
@@ -1913,7 +1933,13 @@ VIEWS.prog = view => {
   }
   const short = progStockNeed().filter(x => x.need > x.left + 0.01);
   short.forEach(x => view.append(el("p", { class: "fine amber-t", text: "⚠ " + stockCode(x.s) + " (" + x.s.sampleId + "): the mixtures planned so far need " + x.need.toFixed(1) + " g, " + x.left.toFixed(1) + " g left. Make more before you run out." })));
-  const old = progOld(); if (old.length) view.append(el("p", { class: "fine muted", text: old.length + (old.length === 1 ? " mixture was" : " mixtures were") + " made to an earlier recipe and " + (old.length === 1 ? "doesn't" : "don't") + " count: " + old.map(m => m.sampleId + " (" + m.prog + ")").join(", ") + "." }));
+  const old = progOld(); if (old.length) view.append(el("div", { class: "card stack", "data-foldkey": "old" }, el("div", { class: "eyebrow", text: "Not counted (" + old.length + ")" }),
+    ...old.map(m => el("div", { class: "stack", style: "gap:6px" }, el("div", { class: "kv" }, el("span", { class: "mono", text: m.sampleId + " · " + m.prog }), el("span", { class: "muted small", text: pelletsOf(m).length + " pellets" })),
+      el("div", { class: "fine", text: m.progOff ? m.progOff.reason : "Made to an earlier recipe" }),
+      el("div", { class: "chips wrap" }, el("button", { class: "chip", type: "button", text: "Correct the mixture", onclick: () => editSample(m) }),
+        el("button", { class: "chip", type: "button", text: "Copy it to its pellets", onclick: () => progRepush(m) }),
+        m.progOff ? el("button", { class: "chip", type: "button", text: "Count it again", onclick: async () => { delete m.progOff; m.updated = Date.now(); await persist(); render() } }) : null))),
+    el("p", { class: "fine", text: "After correcting a mixture, copy it to its pellets so they carry the right make-up." })));
   if (waiting.length) view.append(el("div", { class: "card list" }, el("div", { class: "eyebrow", text: "Standing or drying (" + waiting.length + ")" }),
     ...waiting.map(w => el("div", { class: "kv" }, el("span", { text: w.m.sampleId + " · " + w.m.prog }), el("span", { text: "test " + fmtDay(w.td) })))));
   /* 3 · decisions */
@@ -1976,7 +2002,7 @@ VIEWS.progtest = (view, { mix }) => {
   const K = progKeys(pp); const c = progDefOf(B); const pel = pelletsOf(B).sort(byIdNum);
   const todo = pel.filter(s => progPending(s, K)); const done = pel.filter(s => progTested(s, K));
   let cur = (S.ptCur && todo.find(s => s.id === S.ptCur)) || todo[0];
-  setTitle("Test " + B.sampleId, c.id + " · " + done.length + " of " + pel.length + " tested");
+  setTitle("Test " + B.sampleId, c.id + (B.progOff ? " (not counted)" : "") + " · " + done.length + " of " + pel.length + " tested");
   view.append(progBanner(c, c.dry === PROG_REF_DRY ? "Out of the oven (110 °C, 1 h) and cooled? Weigh and measure, then resistance, then crush. Resistance first: crushing destroys the pellet." : "Weigh and measure, then resistance, then crush. Resistance first: crushing destroys the pellet.", []));
   const chips = el("div", { class: "chips wrap" });
   pel.forEach(s => { const t = progTested(s, K); chips.append(el("button", { class: "chip" + (t || s.removed ? " taken" : ""), type: "button", "aria-pressed": String(cur && s.id === cur.id), text: shortNum(s) + (t ? " ✓" : s.removed ? " · " + s.removed.reason : ""),
