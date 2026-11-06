@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.22";
-const WHATS_NEW = "Stock mixtures: log your M-C, M-G and A stocks and make mixtures from them · the pellet programme weighs out stocks and runs at 40 % carbon of the mix";
+const APP_VERSION = "1.23";
+const WHATS_NEW = "Stock mixtures record carbon particle size (Original or <125 µm), and mixtures made from them pick it up";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -1541,23 +1541,23 @@ const STOCK_KEYS = [1, 2, 3];
 const stockProto = () => D().protocols.find(p => !p.deleted && p.kind === "fjhstock");
 const stockList = () => { const sp = stockProto(); return sp ? D().samples.filter(s => !s.deleted && !s.removed && s.protocolId === sp.id).sort((a, b) => String((a.values || {}).stk_code).localeCompare(String((b.values || {}).stk_code)) || b.created - a.created) : [] };
 const stockCode = s => String((s.values || {}).stk_code || s.sampleId);
-function stockFrac(s) { const v = s.values || {}; const c = num(v.stk_carbon) || 0, a = num(v.stk_ash) || 0; return { total: c + a, f: c + a > 0 ? c / (c + a) : 0, type: v.stk_ctype || "None", size: v.stk_ash_size || "Original" } }
+function stockFrac(s) { const v = s.values || {}; const c = num(v.stk_carbon) || 0, a = num(v.stk_ash) || 0; return { total: c + a, f: c + a > 0 ? c / (c + a) : 0, type: v.stk_ctype || "None", size: v.stk_ash_size || "Original", csize: v.stk_carbon_size || "" } }
 /* grams of a stock used so far, over every mixture that names it */
 function stockUsed(sid) { let g = 0; D().samples.forEach(m => { if (m.deleted) return; const v = m.values || {}; STOCK_KEYS.forEach(i => { if (v["stock" + i] === sid) { const x = num(v["stock" + i + "_g"]); if (x > 0) g += x } }) }); return g }
 const stockLeft = s => stockFrac(s).total - stockUsed(s.sampleId);
-function stockLabel(s) { const F = stockFrac(s); return [stockCode(s), s.sampleId, F.type !== "None" ? fmtN(100 * F.f) + " % " + F.type.toLowerCase() : "plain ash", F.size === "<125 µm" ? "<125 µm ash" : "", fmtN(stockLeft(s)) + " g left"].filter(Boolean).join(" · ") }
+function stockLabel(s) { const F = stockFrac(s); return [stockCode(s), s.sampleId, F.type !== "None" ? fmtN(100 * F.f) + " % " + F.type.toLowerCase() + (F.csize === "<125 µm" ? " <125 µm" : "") : "plain ash", F.size === "<125 µm" ? "<125 µm ash" : "", fmtN(stockLeft(s)) + " g left"].filter(Boolean).join(" · ") }
 const usesStock = vals => STOCK_KEYS.some(i => vals["stock" + i]);
 /* the mixture's make-up from its stocks: solids (g), coke and graphite as % of the solids, the ash size */
 function stockComp(vals) {
-  let sol = 0, coke = 0, gr = 0; const sizes = new Set(); let any = false;
+  let sol = 0, coke = 0, gr = 0; const sizes = new Set(), csizes = new Set(); let any = false;
   STOCK_KEYS.forEach(i => { const sid = vals["stock" + i]; const g = num(vals["stock" + i + "_g"]); if (!sid) return; any = true; const s = sampleBy(sid); if (!s || !(g > 0)) return;
-    const F = stockFrac(s); sol += g; if (F.type === "Graphite") gr += g * F.f; else if (F.type === "Coke") coke += g * F.f; if (F.f < 1) sizes.add(F.size) });
+    const F = stockFrac(s); sol += g; if (F.type === "Graphite") gr += g * F.f; else if (F.type === "Coke") coke += g * F.f; if (F.f < 1) sizes.add(F.size); if (F.f > 0 && F.csize) csizes.add(F.csize) });
   if (!any) return null;
-  return { sol, coke: sol ? 100 * coke / sol : 0, gr: sol ? 100 * gr / sol : 0, size: sizes.size === 1 ? [...sizes][0] : sizes.size > 1 ? "Mixed" : "" };
+  return { sol, coke: sol ? 100 * coke / sol : 0, gr: sol ? 100 * gr / sol : 0, size: sizes.size === 1 ? [...sizes][0] : sizes.size > 1 ? "Mixed" : "", csize: csizes.size === 1 ? [...csizes][0] : csizes.size > 1 ? "Mixed" : "" };
 }
 function stockApply(vals) {
   const sc = stockComp(vals); if (!sc || !(sc.sol > 0)) return null; const w = num(vals.water_pct);
-  vals.carbon_type = "Coke"; vals.carbon_pct = String(+sc.coke.toFixed(2)); vals.graphite_pct = String(+sc.gr.toFixed(2)); if (sc.size) vals.ash_size = sc.size;
+  vals.carbon_type = "Coke"; vals.carbon_pct = String(+sc.coke.toFixed(2)); vals.graphite_pct = String(+sc.gr.toFixed(2)); if (sc.size) vals.ash_size = sc.size; if (sc.csize) vals.carbon_size = sc.csize === "<125 µm" ? "<125" : sc.csize;
   if (w >= 0 && w < 100) vals.total_mass = String(+(sc.sol / (1 - w / 100)).toFixed(2));
   return sc;
 }
@@ -1565,13 +1565,14 @@ function stockCalcText(vals) {
   const sc = stockComp(vals); if (!sc) return "Pick up to three stocks and their masses, or leave these blank and enter the carbon by hand.";
   if (!(sc.sol > 0)) return "Enter the mass of each stock.";
   const w = num(vals.water_pct); const tot = w >= 0 && w < 100 ? sc.sol / (1 - w / 100) : NaN; const c = sc.coke + sc.gr;
-  return fmtN(c) + " % carbon in the solids (coke " + fmtN(sc.coke) + " %, graphite " + fmtN(sc.gr) + " %)" + (tot > 0 ? " · " + fmtN(c * (1 - w / 100)) + " % of the whole mix · add " + (tot - sc.sol).toFixed(2) + " g water for " + tot.toFixed(2) + " g" : " · enter the water %") + (sc.size === "Mixed" ? " · ⚠ the stocks use different ash sizes" : "");
+  return fmtN(c) + " % carbon in the solids (coke " + fmtN(sc.coke) + " %, graphite " + fmtN(sc.gr) + " %)" + (tot > 0 ? " · " + fmtN(c * (1 - w / 100)) + " % of the whole mix · add " + (tot - sc.sol).toFixed(2) + " g water for " + tot.toFixed(2) + " g" : " · enter the water %") + (sc.size === "Mixed" ? " · ⚠ the stocks use different ash sizes" : "") + (sc.csize === "Mixed" ? " · ⚠ the stocks use different carbon sizes" : "");
 }
 /* a stock's code fills in its carbon type and ash size if they're blank */
 function stockFill(vals) {
   const code = String(vals.stk_code || ""); if (!code) return;
   if (!vals.stk_ctype) vals.stk_ctype = /^M-C/.test(code) ? "Coke" : /^M-G/.test(code) ? "Graphite" : /^A/.test(code) ? "None" : "";
   if (!vals.stk_ash_size) vals.stk_ash_size = /<125/.test(code) ? "<125 µm" : "Original";
+  if (!vals.stk_carbon_size && vals.stk_ctype && vals.stk_ctype !== "None") vals.stk_carbon_size = "Original";
 }
 function stockText(vals) { const c = num(vals.stk_carbon) || 0, a = num(vals.stk_ash) || 0; if (!(c + a > 0)) return "Enter the carbon and fly ash masses";
   return fmtN(100 * c / (c + a)) + " % carbon · " + fmtN(c + a) + " g · " + fmtN(100 * c / (c + a) * (1 - PROG_WATER / 100)) + " % of a mix with " + PROG_WATER + " % water" }
@@ -1583,6 +1584,7 @@ function addStockProtocol() {
       description: "A dry blend made in bulk (carbon + fly ash, or plain ash). Mixtures are then made from the stocks plus water, and the app works out the carbon from the stock masses.",
       fields: [F("stk_code", 1, "Stock", "Stock", "Choice", "", { options: STOCK_CODES, required: true, hint: "M-C coke stock, M-G graphite stock, A plain ash; <125 = sieved ash" }),
         F("stk_ctype", 2, "Stock", "Carbon type", "Choice", "", { options: ["Coke", "Graphite", "None"] }),
+        F("stk_carbon_size", 2.5, "Stock", "Carbon particle size", "Choice", "", { options: ["Original", "<125 µm"] }),
         F("stk_carbon", 3, "Stock", "Carbon", "Number", "g"), F("stk_ash", 4, "Stock", "Fly ash", "Number", "g", { required: true }),
         F("stk_ash_size", 5, "Stock", "Fly ash particle size", "Choice", "", { options: ["Original", "<125 µm"] }),
         F("stk_lot", 6, "Stock", "Fly ash lot", "Text", "", { keep: true }), F("stk_mixing", 7, "Stock", "How it was blended", "Text", "", { keep: true }),
@@ -1590,13 +1592,14 @@ function addStockProtocol() {
     changed = true;
   }
   const sp = stockProto(); if (sp && !sp.projectId && mix.projectId) { sp.projectId = mix.projectId; sp.updated = Date.now(); changed = true }
+  if (sp && !sp.fields.some(f => f.key === "stk_carbon_size")) { sp.fields.push(F("stk_carbon_size", 2.5, "Stock", "Carbon particle size", "Choice", "", { options: ["Original", "<125 µm"] })); sp.updated = Date.now(); changed = true }
   if (!mix.fields.some(f => f.key === "stock1")) {
     mix.fields.push(F("stock_calc", 0.1, "From stocks", "From stocks", "Calc", "", { calc: "mixstk" }));
     STOCK_KEYS.forEach(i => mix.fields.push(F("stock" + i, 0.1 + i * 0.2, "From stocks", "Stock " + i, "Stock", "", {}), F("stock" + i + "_g", 0.2 + i * 0.2, "From stocks", "Stock " + i + " mass", "Number", "g")));
     mix.description = "Make a fly ash and carbon mixture, from stocks or from separate ingredients. With stocks, pick them and their masses: the carbon, graphite, ash size and total mass are worked out for you. Water is a % of the total mass. Gives the mixture a batch ID that pellets can be linked to.";
     mix.updated = Date.now(); changed = true;
   }
-  mix.fields.forEach(f => { if (["total_mass", "carbon_type", "carbon_pct", "graphite_pct", "ash_size"].includes(f.key) && !f.fromStock) { f.fromStock = true; mix.updated = Date.now(); changed = true } });
+  mix.fields.forEach(f => { if (["total_mass", "carbon_type", "carbon_pct", "graphite_pct", "ash_size", "carbon_size"].includes(f.key) && !f.fromStock) { f.fromStock = true; mix.updated = Date.now(); changed = true } });
   return changed;
 }
 
@@ -1806,7 +1809,7 @@ function progAhead(T0) {
 /* ---------- presets that open the existing forms filled in ---------- */
 function progMixPreset(e) {
   const mp = progMix(); const c = e.cond; const keys = new Set((mp.fields || []).map(f => f.key)); const R = progStockRecipe(c);
-  const v = { carbon_size: "Original", water_pct: String(PROG_WATER), pellets_made: String(PROG_MAKE),
+  const v = { water_pct: String(PROG_WATER), pellets_made: String(PROG_MAKE),
     stock1: "", stock1_g: "", stock2: "", stock2_g: "", stock3: "", stock3_g: "",
     dry1_method: "", dry1_temp: "", dry1_time: "", dry2: "", dry2_method: "", dry2_temp: "", dry2_time: "" };
   if (c.dry === "Air dry 48 h") Object.assign(v, { dry1_method: "Air", dry1_time: "48" });
