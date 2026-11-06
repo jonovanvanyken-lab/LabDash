@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.24";
-const WHATS_NEW = "Pellet programme: mark a mixture as made wrong, correct it and copy the fix to its pellets; the condition goes back on the list to remake";
+const APP_VERSION = "1.25";
+const WHATS_NEW = "Pellet programme: a programme batch always sets its own press force; a mixture pressed at the wrong force can count as the condition it matches";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -491,7 +491,9 @@ function batchLabel(b) { const v = b.values || {}; return [b.sampleId, [v.carbon
 function batchValues(f, fields, sid) {
   const b = sid ? D().samples.find(x => !x.deleted && x.sampleId === sid) : null; if (!b) return null;
   const src = prot(b.protocolId); const map = f.map || {}; const out = {};
+  const cf = b.prog ? compField(fields.filter(x => !x.off)) : null; const pF = cf ? progDefOf(b).F : null;
   fields.forEach(t => { if (t === f) return; const lbl = t.label.trim().toLowerCase();
+    if (cf && t === cf && pF != null) { out[t.key] = String(pF); return }
     let sk = map[lbl]; if (!sk && src) { const same = src.fields.find(x => x.label.trim().toLowerCase() === lbl); if (same) sk = same.key }
     if (!sk) return; const v = (b.values || {})[sk];
     out[t.key] = v != null && v !== "" ? String(v) : ((t.options || []).includes("None") ? "None" : "") });
@@ -1785,8 +1787,7 @@ function progToday() {
   const madeToday = E.filter(e => e.mix && tsISO(e.mix.created) === t);
   const groups = [...new Set(E.map(e => e.group))];
   const open = groups.find(g => E.some(e => e.group === g && !e.mix));
-  const lastToday = madeToday.length ? madeToday[madeToday.length - 1].group : null;
-  const cur = lastToday && E.some(e => e.group === lastToday && !e.mix) ? lastToday : open;
+  const cur = open; /* the earliest session with anything still to make: a remake stays on today's list */
   const curE = cur ? E.filter(e => e.group === cur) : [];
   const stage = curE.length ? PROG_STAGES.find(s => s.n === curE[0].stage) : null;
   const blocked = stage && !progStageReady(stage) ? stage : null;
@@ -1882,7 +1883,15 @@ function progTestCard(m) {
 /* a programme mixture that wasn't made to its recipe: out of the count, its pellets still testable */
 function progMadeWrong(m) {
   const note = el("textarea", { placeholder: "What went wrong (e.g. sieved coke used on its own, no fly ash)", style: "min-height:70px" });
-  sheet(m.sampleId + " made wrong?", el("div", { class: "stack" },
+  const d0 = progDefOf(m); const free = c => progMixes(c.id).length < c.mixes;
+  const alt = progConds().filter(c => c.id !== m.prog && c.stage === d0.stage && progReady(c) && free(c) && ["size", "C", "G", "dry"].every(k => String(c[k]) === String(d0[k])));
+  const move = alt.length ? el("div", { class: "stack", style: "gap:6px" }, el("div", { class: "small", style: "font-weight:600", text: "Pressed at a different force? Count it as:" }),
+    el("div", { class: "chips wrap" }, ...alt.map(c => el("button", { class: "chip", type: "button", text: c.id + " · " + c.F + " N", onclick: async () => {
+      const was = m.prog; m.prog = c.id; m.progDef = { id: c.id, stage: c.stage, size: c.size, C: c.C, G: c.G, F: c.F, dry: c.dry, n: c.n, mixes: c.mixes };
+      m.notes = [m.notes, "Planned as " + was + " but pressed at " + c.F + " N, so counted as " + c.id + (note.value.trim() ? ": " + note.value.trim() : "")].filter(Boolean).join("\n"); m.updated = Date.now();
+      closeSheet(); await progRepush(m); toast(m.sampleId + " now counts as " + c.id + "; " + was + " is back on the list.") } }))),
+    el("p", { class: "fine", text: "Its pellets get the new force. " + m.prog + " goes back on the list to make." })) : null;
+  sheet(m.sampleId + " made wrong?", el("div", { class: "stack" }, move,
     el("p", { class: "small", text: "It stops counting for " + m.prog + ", which goes back on the list to remake. Its pellets stay in the log and you can still test them. Next you'll correct what actually went in." }), note,
     el("button", { class: "primary", type: "button", text: "Take it out of the programme", onclick: async () => {
       m.progOff = { reason: note.value.trim() || "Made wrong", at: Date.now() }; m.notes = [m.notes, "Not counted for " + m.prog + ": " + m.progOff.reason].filter(Boolean).join("\n"); m.updated = Date.now();
