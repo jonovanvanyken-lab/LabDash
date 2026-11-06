@@ -5,19 +5,31 @@ Downloads your encrypted LabDash from its private GitHub repository, decrypts it
   * photos into each project's OneDrive folder, named by sample ID and date
 
 Your passphrase and GitHub token are kept in Windows Credential Manager (via the keyring package),
-never in a file. Run once with "setup", then a scheduled task runs "run" every 15 minutes.
+never in a file. Run once with "setup", then a scheduled task syncs every 10 minutes from 07:00 to 17:00
+(laptop time) and once an hour outside those hours.
 
     python labdash_sync.py setup     # asks for repo, token, passphrase, OneDrive folder; adds the scheduled task
-    python labdash_sync.py run       # one sync (what the scheduled task does)
+    python labdash_sync.py run       # one sync now
+    python labdash_sync.py schedule  # (re)creates the scheduled task with the timetable above
     python labdash_sync.py remove    # removes the scheduled task and stored secrets
+    python labdash_sync.py write-access  # stores a token that can WRITE to the data repository (needed for the Inbox)
+    python labdash_sync.py inbox-check   # shows what the files in OneDrive/LabDash/Inbox would change, without changing anything
+
+Inbox: save an edited copy of LabDash-data.xlsx into OneDrive/LabDash/Inbox. The next sync writes the cells you changed on the
+protocol sheets (measurements and Notes) into LabDash, then moves the file to Inbox/Done with a report of what it did.
 """
-import base64, datetime as dt, getpass, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import base64, datetime as dt, getpass, json, os, re, socket, subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
 from pathlib import Path
 
 APP = "LabDash"
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "LabDash"
 STATE = STATE_DIR / "state.json"
 LOG = STATE_DIR / "sync.log"
+TASK = "LabDash sync"
+BUSY_FROM, BUSY_TO = 7, 17   # every 10 minutes between these hours (laptop time), hourly otherwise
+MAX_RUN = 8 * 60             # a sync that takes longer than this is stopped and logged
+socket.setdefaulttimeout(60)
+STAGE = ["starting"]         # what the sync is doing right now, for the log if it gets stuck
 
 
 def log(msg):
@@ -80,6 +92,53 @@ class Source:
                 raise SystemExit("GitHub rejected the token. It may have expired: run setup again with a new one.")
             raise
 
+    def get_vault(self):
+        """vault.json's bytes and its git sha (the sha lets the upload be refused if the phone saved in between)."""
+        if self.local:
+            p = self.local / "vault.json"
+            if not p.exists():
+                return None, None
+            data = p.read_bytes()
+            import hashlib
+            return data, hashlib.sha1(data).hexdigest()
+        h = {"Authorization": "Bearer " + self.token, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "LabDash-laptop-sync"}
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/{self.repo}/contents/vault.json",
+                                                               headers=dict(h, Accept="application/vnd.github.object+json")), timeout=60) as r:
+                sha = json.loads(r.read())["sha"]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None, None
+            if e.code == 401:
+                raise SystemExit("GitHub rejected the token. It may have expired: run setup again with a new one.")
+            raise
+        with urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/{self.repo}/git/blobs/{sha}",
+                                                           headers=dict(h, Accept="application/vnd.github.raw+json")), timeout=120) as r:
+            return r.read(), sha
+
+    def put_vault(self, data, sha, write_token):
+        """Upload a new vault.json. Returns False if it changed on GitHub since it was downloaded."""
+        if self.local:
+            p = self.local / "vault.json"
+            import hashlib
+            if hashlib.sha1(p.read_bytes()).hexdigest() != sha:
+                return False
+            p.write_bytes(data)
+            return True
+        body = json.dumps({"message": "LabDash sync (laptop inbox)", "content": base64.b64encode(data).decode(), "sha": sha}).encode()
+        req = urllib.request.Request(f"https://api.github.com/repos/{self.repo}/contents/vault.json", data=body, method="PUT",
+                                     headers={"Authorization": "Bearer " + write_token, "Accept": "application/vnd.github+json",
+                                              "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "LabDash-laptop-sync"})
+        try:
+            with urllib.request.urlopen(req, timeout=120):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code in (409, 422):
+                return False
+            if e.code in (401, 403, 404):
+                raise SystemExit("GitHub refused the upload. The write token may have expired or can't write to the repository: run  python labdash_sync.py write-access  again.")
+            raise
+
     def repo_info(self):
         if self.local:
             return {"private": True}
@@ -106,6 +165,15 @@ def unlock(vault, passphrase):
     key = AESGCM(raw)
     docs = json.loads(key.decrypt(base64.b64decode(vault["iv"]), base64.b64decode(vault["ct"]), None))
     return key, docs
+
+
+def seal(key, vault, docs):
+    """Encrypt the notebook again exactly as the app does (same data key, fresh IV)."""
+    iv = os.urandom(12)
+    ct = key.encrypt(iv, json.dumps(docs, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), None)
+    return json.dumps({"kind": vault.get("kind", "labdash-vault"), "v": vault.get("v", 1), "keys": vault["keys"],
+                       "iv": base64.b64encode(iv).decode(), "ct": base64.b64encode(ct).decode(),
+                       "saved": int(time.time() * 1000)}).encode("utf-8")
 
 
 def decrypt_image(key, rec):
@@ -252,7 +320,13 @@ def programme_sheets(docs, samples, protos, sheet):
             c["made"] += m["deformed"]
             c["broken"] += m["deformed"]
     rows.sort(key=lambda r: (r[1], r[0]))
-    sheet("Programme", ["Pellet", "Condition", "Stage", "Mixture", "Fly ash size", "Total carbon (%)", "Graphite (%)", "Coke (%)", "Force (N)", "Drying",
+    # stocks the mixtures were made from
+    stk = {s["sampleId"]: s for s in samples if (protos.get(s.get("protocolId")) or {}).get("kind") == "fjhstock"}
+    for r in rows:
+        mv = (by_id.get(r[3]) or {}).get("values") or {}
+        r.insert(10, ", ".join(f'{(stk.get(mv.get(f"stock{i}")) or {}).get("values", {}).get("stk_code", mv.get(f"stock{i}"))} {mv.get(f"stock{i}_g")} g'
+                                for i in (1, 2, 3) if mv.get(f"stock{i}")))
+    sheet("Programme", ["Pellet", "Condition", "Stage", "Mixture", "Fly ash size", "Total carbon (% of mix)", "Graphite (% of mix)", "Coke (% of mix)", "Force (N)", "Drying", "Stocks",
                         "Pressed", "Green mass (g)", "Dry mass (g)", "Dry D (mm)", "Dry H (mm)", "Resistance (Ω)", "Breaking force (N)", "Failure mode",
                         "Mass loss on drying (%)", "Dry density (g/cm³)", "Resistivity (Ω·cm)", "Axial strength (kPa)", "Removed", "Notes"], rows)
     sd = lambda a: round(stx.stdev(a), 3) if len(a) > 1 else None
@@ -397,6 +471,199 @@ def write_workbook(docs, path):
         return False
 
 
+# ---------- inbox: edited copies of the workbook flow back into LabDash ----------
+# Put an edited copy of LabDash-data.xlsx in OneDrive\LabDash\Inbox. On the next sync, every cell on a protocol sheet that you
+# typed a new value into is written to that sample in LabDash, then the file moves to Inbox\Done with a report next to it.
+# Blank cells never clear anything, calculated columns are ignored, and a value that LabDash itself held earlier (an
+# out-of-date copy) is not written back over a newer one.
+INBOX_TYPES = {"Number", "Text", "Choice", "Check"}
+
+
+def _num(v):
+    try:
+        return float(str(v).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def same_val(a, b):
+    """The app's own comparison: equal as text, or equal as numbers."""
+    a = "" if a is None else str(a).strip()
+    b = "" if b is None else str(b).strip()
+    if a == b:
+        return True
+    x, y = _num(a), _num(b)
+    return x is not None and y is not None and x == y
+
+
+def vkey(v):
+    """A stable text form of a value, for remembering what LabDash has held."""
+    n = _num(v)
+    return repr(n) if n is not None else ("" if v is None else str(v).strip())
+
+
+def remember_values(docs, st):
+    """Note every value LabDash holds now, so an older copy of the workbook can't put an old value back."""
+    seen = st.setdefault("seen", {})
+    for s in docs.get("samples", []):
+        if s.get("deleted"):
+            continue
+        rec = seen.setdefault(s.get("id", ""), {})
+        for k, v in list((s.get("values") or {}).items()) + [("__notes", s.get("notes", ""))]:
+            lst = rec.setdefault(k, [])
+            kv = vkey(v)
+            if kv not in lst:
+                lst.append(kv)
+                del lst[:-12]
+
+
+def inbox_files(onedrive_root):
+    box = onedrive_root / "LabDash" / "Inbox"
+    box.mkdir(parents=True, exist_ok=True)
+    return sorted(p for p in box.glob("*.xlsx") if not p.name.startswith("~$"))
+
+
+def plan_inbox(docs, st, path):
+    """Work out what an edited workbook changes. Returns (changes, notes) without touching anything."""
+    from openpyxl import load_workbook
+    wb = load_workbook(path, data_only=True, read_only=True)
+    protos = [p for p in docs.get("protocols", []) if not p.get("deleted")]
+    samples = [s for s in docs.get("samples", []) if not s.get("deleted")]
+    seen = st.get("seen", {})
+    changes, notes = [], []
+    for pr in protos:
+        title = safe(pr["name"])[:31]
+        if title not in wb.sheetnames:
+            continue
+        rows = list(wb[title].iter_rows(values_only=True))
+        if not rows:
+            continue
+        header = [str(h).strip() if h is not None else "" for h in rows[0]]
+        cols = {}
+        for f in pr.get("fields", []):
+            name = f["label"] + (f" ({f['unit']})" if f.get("unit") else "")
+            if name in header:
+                cols[header.index(name)] = f
+        notes_col = header.index("Notes") if "Notes" in header else None
+        by_sid = {s["sampleId"]: s for s in samples if s.get("protocolId") == pr["id"]}
+        for r in rows[1:]:
+            if not r or r[0] is None:
+                continue
+            sid = str(r[0]).strip()
+            s = by_sid.get(sid)
+            if not s:
+                notes.append(f"{title}: {sid} isn't a {pr['name']} sample in LabDash, so its row was skipped.")
+                continue
+            vals = s.get("values") or {}
+            hist = seen.get(s["id"], {})
+            todo = [(i, f) for i, f in cols.items()] + ([(notes_col, None)] if notes_col is not None else [])
+            for i, f in todo:
+                new = r[i] if i < len(r) else None
+                if new is None or str(new).strip() == "":
+                    continue  # blank cells never clear anything
+                key = f["key"] if f else "__notes"
+                label = f["label"] if f else "Notes"
+                old = vals.get(key) if f else s.get("notes", "")
+                if same_val(new, old):
+                    continue
+                if vkey(new) in hist.get(key, []):
+                    notes.append(f"{sid} {label}: your copy has {new!r}, an older value. LabDash now has {old!r}, so it was kept.")
+                    continue
+                if f:
+                    ftype = f.get("type", "Text")
+                    if ftype not in INBOX_TYPES:
+                        notes.append(f"{sid} {label}: this is a {ftype} field, which can only be changed in the app.")
+                        continue
+                    if f.get("showIf") and str(vals.get(f["showIf"].get("key"), "")) != str(f["showIf"].get("equals")):
+                        notes.append(f"{sid} {label}: this field is hidden for this sample in the app, so it was skipped.")
+                        continue
+                    if ftype == "Number":
+                        n = _num(new)
+                        if n is None:
+                            notes.append(f"{sid} {label}: {new!r} isn't a number, so it was skipped.")
+                            continue
+                        new = int(n) if n.is_integer() else n
+                    else:
+                        new = str(new).strip()
+                        opts = f.get("options") or []
+                        if ftype in ("Choice", "Check") and opts and new not in opts:
+                            notes.append(f"{sid} {label}: {new!r} isn't one of the choices ({', '.join(map(str, opts))}), so it was skipped.")
+                            continue
+                else:
+                    new = str(new).strip()
+                changes.append({"sample": s, "key": key, "label": label, "old": old, "new": new})
+    wb.close()
+    return changes, notes
+
+
+def apply_changes(changes):
+    now = int(time.time() * 1000)
+    for c in changes:
+        s = c["sample"]
+        if c["key"] == "__notes":
+            s["notes"] = c["new"]
+        else:
+            s.setdefault("values", {})[c["key"]] = c["new"]
+            diff = s.get("batchDiff")
+            if isinstance(diff, dict) and c["key"] in diff:  # keep the "changed from batch" flag honest
+                if same_val(c["new"], diff[c["key"]]):
+                    del diff[c["key"]]
+                if not diff:
+                    s.pop("batchDiff", None)
+        s["edited"] = s["updated"] = now
+
+
+def describe(changes, notes):
+    def show(v):
+        return "(blank)" if v is None or str(v).strip() == "" else str(v)
+    lines = [f"{c['sample']['sampleId']}  {c['label']}: {show(c['old'])} -> {show(c['new'])}" for c in changes]
+    return lines + ([""] + ["Not applied:"] + ["  " + n for n in notes] if notes else [])
+
+
+def process_inbox(src, key, vault, docs, sha, st, onedrive_root):
+    """Apply edited workbooks from the Inbox. Returns the notebook as it now stands."""
+    files = inbox_files(onedrive_root)
+    if not files:
+        return docs
+    wt = secret("write_token") if not src.local else "local"
+    if not wt:
+        log(f"{len(files)} file(s) waiting in the LabDash Inbox. To let the laptop write to LabDash, run  python labdash_sync.py write-access  once.")
+        return docs
+    done = onedrive_root / "LabDash" / "Inbox" / "Done"
+    done.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    for path in files:
+        STAGE[0] = f"reading {path.name} from the Inbox"
+        try:
+            changes, notes = plan_inbox(docs, st, path)
+        except PermissionError:
+            log(f"{path.name} is open in Excel, so the Inbox will pick it up next time.")
+            continue
+        except Exception as e:
+            log(f"Couldn't read {path.name} from the Inbox: {e!r}")
+            continue
+        if changes:
+            apply_changes(changes)
+            STAGE[0] = f"uploading {len(changes)} change(s) from {path.name}"
+            if not src.put_vault(seal(key, vault, docs), sha, wt):
+                log(f"LabDash changed on GitHub while {path.name} was being applied (probably your phone syncing). It will be tried again next time.")
+                raise _Retry()
+            _, sha = src.get_vault()
+        report = [f"{path.name}  ·  applied {dt.datetime.now():%d/%m/%Y %H:%M}", f"{len(changes)} change(s) written to LabDash:", ""] + describe(changes, notes)
+        target = done / f"{path.stem} {stamp}.xlsx"
+        try:
+            os.replace(path, target)
+        except OSError:
+            target = path
+        target.with_name(target.stem + " - report.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+        log(f"Inbox: {path.name} gave {len(changes)} change(s), {len(notes)} skipped. Report in Inbox\\Done.")
+    return docs
+
+
+class _Retry(Exception):
+    pass
+
+
 class RunLock:
     """Stops two syncs (the scheduled one and a manual one) running at once and saving photos twice."""
     def __init__(self):
@@ -406,7 +673,7 @@ class RunLock:
     def __enter__(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            if self.path.exists() and time.time() - self.path.stat().st_mtime > 300:
+            if self.path.exists() and time.time() - self.path.stat().st_mtime > MAX_RUN + 120:
                 self.path.unlink()  # left behind by a sync that crashed
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode())
@@ -429,16 +696,47 @@ def sync(src, passphrase, onedrive_root):
         if not lock.held:
             log("Another sync is already running, so this one was skipped.")
             return
-        _sync(src, passphrase, onedrive_root)
+        timer = watchdog(lock.path)
+        try:
+            _sync(src, passphrase, onedrive_root)
+        finally:
+            timer.cancel()
+
+
+def watchdog(lock_path):
+    """If a sync hangs (usually a network call that never answers), log where it stopped and end it."""
+    def fire():
+        log(f"Sync stopped after {MAX_RUN // 60} minutes stuck at: {STAGE[0]}. Will try again next time.")
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+        os._exit(3)
+    t = threading.Timer(MAX_RUN, fire)
+    t.daemon = True
+    t.start()
+    return t
 
 
 def _sync(src, passphrase, onedrive_root):
-    raw = src.get("vault.json")
+    t0 = time.time()
+    STAGE[0] = "downloading vault.json from GitHub"
+    raw, sha = src.get_vault()
     if raw is None:
         log("No LabDash in the repository yet. Set it up on your phone first.")
         return
-    key, docs = unlock(json.loads(raw), passphrase)
+    STAGE[0] = f"decrypting vault.json ({len(raw) // 1024} KB)"
+    vault = json.loads(raw)
+    key, docs = unlock(vault, passphrase)
     st = load_state()
+    remember_values(docs, st)
+    try:
+        docs = process_inbox(src, key, vault, docs, sha, st, onedrive_root)
+    except _Retry:
+        save_state(st)
+        return
+    remember_values(docs, st)
+    save_state(st)
     done = set(st.get("photos", []))
     projects = {p["id"]: p for p in docs.get("projects", [])}
     new = 0
@@ -450,12 +748,14 @@ def _sync(src, passphrase, onedrive_root):
         for n, pid in enumerate(l.get("photos") or [], 1):
             if pid in done:
                 continue
+            STAGE[0] = f"downloading photo {pid} ({new} new photos saved so far)"
             blob = src.get(f"img/{pid}.json")
             if blob is None:
                 continue  # not uploaded yet; try next time
             folder = project_dir(onedrive_root, projects.get(l.get("projectId")))
             folder.mkdir(parents=True, exist_ok=True)
             name = f"{base}_{stamp}" + (f"_{n}" if len(l["photos"]) > 1 else "") + ".jpg"
+            STAGE[0] = f"saving photo {name} to OneDrive"
             data = decrypt_image(key, json.loads(blob))
             target = folder / name
             i = 2
@@ -468,11 +768,13 @@ def _sync(src, passphrase, onedrive_root):
             done.add(pid)
             st["photos"] = sorted(done)
             save_state(st)  # record each photo straight away
+    STAGE[0] = "writing LabDash-data.xlsx"
     wrote = write_workbook(docs, onedrive_root / "LabDash" / "LabDash-data.xlsx")
     st["photos"] = sorted(done)
     st["last"] = time.time()
     save_state(st)
-    log(f"Synced: {len(docs.get('samples', []))} samples, {len(docs.get('tasks', []))} tasks, {new} new photos" + ("" if wrote else " (workbook skipped)"))
+    log(f"Synced: {len(docs.get('samples', []))} samples, {len(docs.get('tasks', []))} tasks, {new} new photos" + ("" if wrote else " (workbook skipped)")
+        + (f" in {time.time() - t0:.0f} s" if time.time() - t0 > 60 else ""))
 
 
 def default_onedrive():
@@ -509,16 +811,37 @@ def setup():
     set_secret("onedrive", od)
     print("\nSaved to Windows Credential Manager. Running a first sync...")
     sync(src, passphrase, Path(od))
-    if os.name == "nt":
-        pyw = Path(sys.executable).with_name("pythonw.exe")
-        exe = pyw if pyw.exists() else Path(sys.executable)
-        cmd = f'"{exe}" "{Path(__file__).resolve()}" run'
-        r = subprocess.run(["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "15", "/TN", "LabDash sync", "/TR", cmd], capture_output=True, text=True)
-        print("Scheduled task added: runs every 15 minutes." if r.returncode == 0 else "Couldn't add the scheduled task:\n" + r.stdout + r.stderr)
+    schedule()
     print(f"\nDone. Your workbook: {Path(od) / 'LabDash' / 'LabDash-data.xlsx'}\nLog: {LOG}")
 
 
-def run():
+def schedule():
+    """The task fires every 10 minutes; outside BUSY_FROM-BUSY_TO, run --scheduled only syncs once an hour."""
+    if os.name != "nt":
+        return
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    exe = pyw if pyw.exists() else Path(sys.executable)
+    cmd = f'"{exe}" "{Path(__file__).resolve()}" run --scheduled'
+    r = subprocess.run(["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "10", "/TN", TASK, "/TR", cmd], capture_output=True, text=True)
+    print(f"Scheduled task set: every 10 minutes {BUSY_FROM:02d}:00-{BUSY_TO:02d}:00, hourly otherwise."
+          if r.returncode == 0 else "Couldn't set the scheduled task:\n" + r.stdout + r.stderr)
+
+
+def due(st, now=None):
+    """Scheduled runs: always during working hours, otherwise once an hour."""
+    now = now or dt.datetime.now()
+    if BUSY_FROM <= now.hour < BUSY_TO:
+        return True
+    return time.time() - st.get("tried", 0) >= 55 * 60
+
+
+def run(scheduled=False):
+    if scheduled:
+        st = load_state()
+        if not due(st):
+            return
+        st["tried"] = time.time()
+        save_state(st)
     repo, token, pw, od = secret("repo"), secret("token"), secret("passphrase"), secret("onedrive")
     if not (repo and token and pw and od):
         raise SystemExit("Not set up yet: run  python labdash_sync.py setup")
@@ -528,15 +851,59 @@ def run():
         log(f"Offline or GitHub unreachable ({e}). Will try again next time.")
 
 
+def write_access():
+    repo = secret("repo")
+    if not repo:
+        raise SystemExit("Not set up yet: run install.bat first.")
+    print(f"The Inbox needs a GitHub token that can READ AND WRITE {repo}.")
+    print("On GitHub: Settings > Developer settings > Fine-grained tokens > Generate new token.")
+    print(f"  Repository access: Only select repositories > {repo}")
+    print("  Permissions: Contents > Read and write")
+    print("Paste the token below with a RIGHT-CLICK, then press Enter.")
+    token = input("GitHub write token: ").strip()
+    if not token.startswith("github_pat_"):
+        raise SystemExit("That doesn't look like a fine-grained token (they start with github_pat_). Try again and paste it with a right-click.")
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}", headers={"Authorization": "Bearer " + token,
+                                 "Accept": "application/vnd.github+json", "User-Agent": "LabDash-laptop-sync"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            info = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"GitHub said {e.code}. Check the token can reach {repo}.")
+    if not (info.get("permissions") or {}).get("push"):
+        raise SystemExit("That token can read the repository but not write to it. Give it Contents: Read and write.")
+    set_secret("write_token", token)
+    print("Saved to Windows Credential Manager. Files you put in OneDrive\\LabDash\\Inbox will now be applied at each sync.")
+
+
+def inbox_check():
+    repo, token, pw, od = secret("repo"), secret("token"), secret("passphrase"), secret("onedrive")
+    if not (repo and token and pw and od):
+        raise SystemExit("Not set up yet: run install.bat first.")
+    raw, _ = Source(repo, token).get_vault()
+    _, docs = unlock(json.loads(raw), pw)
+    st = load_state()
+    remember_values(docs, st)
+    files = inbox_files(Path(od))
+    if not files:
+        print("The Inbox is empty: " + str(Path(od) / "LabDash" / "Inbox"))
+    for f in files:
+        changes, notes = plan_inbox(docs, st, f)
+        print(f"\n{f.name}: {len(changes)} change(s) would be written")
+        print("\n".join("  " + x for x in describe(changes, notes)))
+    if files and not secret("write_token"):
+        print("\nNothing will be written until you run  python labdash_sync.py write-access")
+
+
 def remove():
     import keyring
-    for n in ("repo", "token", "passphrase", "onedrive"):
+    for n in ("repo", "token", "passphrase", "onedrive", "write_token"):
         try:
             keyring.delete_password(APP, n)
         except Exception:
             pass
     if os.name == "nt":
-        subprocess.run(["schtasks", "/Delete", "/F", "/TN", "LabDash sync"])
+        subprocess.run(["schtasks", "/Delete", "/F", "/TN", TASK])
     print("Removed the scheduled task and stored secrets. Your OneDrive files are untouched.")
 
 
@@ -554,7 +921,7 @@ if __name__ == "__main__":
             print(f"\nSetup hit an error: {e!r}\nSend Claude a screenshot of this window.")
     elif cmd == "run":
         try:
-            run()
+            run(scheduled="--scheduled" in sys.argv[2:])
         except SystemExit as e:
             if e.code and not isinstance(e.code, int):
                 log(str(e.code))
@@ -562,6 +929,16 @@ if __name__ == "__main__":
         except Exception as e:  # keep a record when running hidden from the scheduler
             log(f"Error: {e!r}")
             raise
+    elif cmd == "schedule":
+        schedule()
+    elif cmd == "write-access":
+        try:
+            write_access()
+        except SystemExit as e:
+            if e.code and not isinstance(e.code, int):
+                print("\nStopped: " + str(e.code))
+    elif cmd == "inbox-check":
+        inbox_check()
     elif cmd == "remove":
         remove()
     elif cmd == "test-local":  # developer check: python labdash_sync.py test-local <repo-dir> <passphrase> <out-dir>

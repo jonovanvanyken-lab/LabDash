@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.21";
-const WHATS_NEW = "Pellet programme: a daily schedule of what to mix, press and test, in Lab mode · green mass and graphite on the pellet forms";
+const APP_VERSION = "1.22";
+const WHATS_NEW = "Stock mixtures: log your M-C, M-G and A stocks and make mixtures from them · the pellet programme weighs out stocks and runs at 40 % carbon of the mix";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -364,6 +364,7 @@ function migrate() {
       if (/^diameter$/i.test(f.label.trim()) && f.type === "Number" && f.dflt == null) { f.dflt = "10"; f.hint = f.hint || "10 mm unless you change it" } });
     pel.updated = Date.now(); st.pelletV2 = true; changed = true } }
   if (progMigrate()) changed = true;
+  if (addStockProtocol()) changed = true;
   return changed;
 }
 function addMixProtocol() {
@@ -473,8 +474,13 @@ function pctSum(fields, values) { const ds = fields.filter(x => x.pctOf === "dry
   const ps = fields.filter(x => x.pctOf && values[x.key] !== "" && values[x.key] != null); return ps.length ? ps.reduce((a, x) => a + (num(values[x.key]) || 0), 0) : null }
 /* calculated fields: fly ash = 100 − carbon − graphite (of the solids); also shown as % of the whole mix using the water % */
 function faCalc(vals) { const c = num(vals.carbon_pct), g = num(vals.graphite_pct), w = num(vals.water_pct); const solids = 100 - (c >= 0 ? c : 0) - (g >= 0 ? g : 0); const total = solids * (100 - (w >= 0 ? w : 0)) / 100; return { solids, total, ok: solids >= 0 } }
-function computeCalc(fields, vals) { fields.forEach(f => { if (f.type === "Calc" && f.calc === "fa") vals[f.key] = String(+faCalc(vals).solids.toFixed(2)) }) }
-function calcText(f, vals) { if (f.calc !== "fa") return ""; const r = faCalc(vals); if (!r.ok) return "Carbon is over 100%"; return +r.solids.toFixed(2) + "% of the solids  ·  " + +r.total.toFixed(2) + "% of the whole mix" }
+function computeCalc(fields, vals) {
+  if (fields.some(f => f.type === "Calc" && f.calc === "mixstk")) stockApply(vals);
+  fields.forEach(f => { if (f.type !== "Calc") return;
+    if (f.calc === "fa") vals[f.key] = String(+faCalc(vals).solids.toFixed(2));
+    if (f.calc === "stk") { stockFill(vals); const c = num(vals.stk_carbon) || 0, a = num(vals.stk_ash) || 0; vals[f.key] = c + a > 0 ? String(+(100 * c / (c + a)).toFixed(2)) : "" }
+    if (f.calc === "mixstk") { const sc = stockComp(vals); vals[f.key] = sc && sc.sol > 0 ? String(+(sc.coke + sc.gr).toFixed(2)) : "" } }) }
+function calcText(f, vals) { if (f.calc === "stk") return stockText(vals); if (f.calc === "mixstk") return stockCalcText(vals); if (f.calc !== "fa") return ""; const r = faCalc(vals); if (!r.ok) return "Carbon is over 100%"; return +r.solids.toFixed(2) + "% of the solids  ·  " + +r.total.toFixed(2) + "% of the whole mix" }
 /* fields that only show when another field has a given value (e.g. stage 2 drying) */
 const checkLabel = f => (f.options && f.options[0]) || "Done";
 const shown = (f, vals) => !f.showIf || String((vals || {})[f.showIf.key] || "") === String(f.showIf.equals);
@@ -806,6 +812,14 @@ function fieldInput(f, vals, onChange, fields) {
   const changed = r => onChange && onChange(r);
   const dep = (fields || []).some(x => x.showIf && x.showIf.key === f.key);
   if (f.type === "Calc") { const d = el("div", { class: "calcval" }); d._upd = () => { computeCalc([f], vals); d.textContent = calcText(f, vals) }; d._upd(); return d }
+  /* worked out from the stocks: shown, not typed */
+  if (f.fromStock && usesStock(vals)) { const d = el("div", { class: "calcval" }); d._upd = () => { const v = vals[f.key]; d.textContent = (v != null && v !== "" ? v + (f.unit ? " " + f.unit : "") : "–") + " · from the stocks" }; d._upd(); return d }
+  if (f.type === "Stock") {
+    const list = stockList(); const sel = el("select", { "aria-label": f.label }, el("option", { value: "", text: "No stock" }), ...list.map(b => el("option", { value: b.sampleId, selected: vals[f.key] === b.sampleId, text: stockLabel(b) })));
+    if (vals[f.key] && !list.some(b => b.sampleId === vals[f.key])) sel.append(el("option", { value: vals[f.key], selected: true, text: vals[f.key] }));
+    if (!list.length) sel.append(el("option", { value: "", disabled: true, text: "No stocks logged yet" }));
+    sel.addEventListener("change", () => { vals[f.key] = sel.value; changed(true) }); return sel;
+  }
   if (f.type === "Batch") {
     /* finished batches (every pellet logged or lost) drop off, unless one is already picked */
     const all = batchList(f), list = all.filter(b => !batchStats(b).done || b.sampleId === vals[f.key]);
@@ -1519,6 +1533,95 @@ async function syncNow(manual) {
   finally { inSync = false }
 }
 
+/* ---------- stock mixtures ----------
+   A stock is a dry blend made in bulk (e.g. M-C: coke + original ash). Mixtures can be made from up to three stocks
+   plus water: the mixture's carbon %, graphite %, ash size and total mass are then worked out from the stock grams. */
+const STOCK_CODES = ["M-C", "M-C<125", "M-G", "M-G<125", "A", "A<125"];
+const STOCK_KEYS = [1, 2, 3];
+const stockProto = () => D().protocols.find(p => !p.deleted && p.kind === "fjhstock");
+const stockList = () => { const sp = stockProto(); return sp ? D().samples.filter(s => !s.deleted && !s.removed && s.protocolId === sp.id).sort((a, b) => String((a.values || {}).stk_code).localeCompare(String((b.values || {}).stk_code)) || b.created - a.created) : [] };
+const stockCode = s => String((s.values || {}).stk_code || s.sampleId);
+function stockFrac(s) { const v = s.values || {}; const c = num(v.stk_carbon) || 0, a = num(v.stk_ash) || 0; return { total: c + a, f: c + a > 0 ? c / (c + a) : 0, type: v.stk_ctype || "None", size: v.stk_ash_size || "Original" } }
+/* grams of a stock used so far, over every mixture that names it */
+function stockUsed(sid) { let g = 0; D().samples.forEach(m => { if (m.deleted) return; const v = m.values || {}; STOCK_KEYS.forEach(i => { if (v["stock" + i] === sid) { const x = num(v["stock" + i + "_g"]); if (x > 0) g += x } }) }); return g }
+const stockLeft = s => stockFrac(s).total - stockUsed(s.sampleId);
+function stockLabel(s) { const F = stockFrac(s); return [stockCode(s), s.sampleId, F.type !== "None" ? fmtN(100 * F.f) + " % " + F.type.toLowerCase() : "plain ash", F.size === "<125 µm" ? "<125 µm ash" : "", fmtN(stockLeft(s)) + " g left"].filter(Boolean).join(" · ") }
+const usesStock = vals => STOCK_KEYS.some(i => vals["stock" + i]);
+/* the mixture's make-up from its stocks: solids (g), coke and graphite as % of the solids, the ash size */
+function stockComp(vals) {
+  let sol = 0, coke = 0, gr = 0; const sizes = new Set(); let any = false;
+  STOCK_KEYS.forEach(i => { const sid = vals["stock" + i]; const g = num(vals["stock" + i + "_g"]); if (!sid) return; any = true; const s = sampleBy(sid); if (!s || !(g > 0)) return;
+    const F = stockFrac(s); sol += g; if (F.type === "Graphite") gr += g * F.f; else if (F.type === "Coke") coke += g * F.f; if (F.f < 1) sizes.add(F.size) });
+  if (!any) return null;
+  return { sol, coke: sol ? 100 * coke / sol : 0, gr: sol ? 100 * gr / sol : 0, size: sizes.size === 1 ? [...sizes][0] : sizes.size > 1 ? "Mixed" : "" };
+}
+function stockApply(vals) {
+  const sc = stockComp(vals); if (!sc || !(sc.sol > 0)) return null; const w = num(vals.water_pct);
+  vals.carbon_type = "Coke"; vals.carbon_pct = String(+sc.coke.toFixed(2)); vals.graphite_pct = String(+sc.gr.toFixed(2)); if (sc.size) vals.ash_size = sc.size;
+  if (w >= 0 && w < 100) vals.total_mass = String(+(sc.sol / (1 - w / 100)).toFixed(2));
+  return sc;
+}
+function stockCalcText(vals) {
+  const sc = stockComp(vals); if (!sc) return "Pick up to three stocks and their masses, or leave these blank and enter the carbon by hand.";
+  if (!(sc.sol > 0)) return "Enter the mass of each stock.";
+  const w = num(vals.water_pct); const tot = w >= 0 && w < 100 ? sc.sol / (1 - w / 100) : NaN; const c = sc.coke + sc.gr;
+  return fmtN(c) + " % carbon in the solids (coke " + fmtN(sc.coke) + " %, graphite " + fmtN(sc.gr) + " %)" + (tot > 0 ? " · " + fmtN(c * (1 - w / 100)) + " % of the whole mix · add " + (tot - sc.sol).toFixed(2) + " g water for " + tot.toFixed(2) + " g" : " · enter the water %") + (sc.size === "Mixed" ? " · ⚠ the stocks use different ash sizes" : "");
+}
+/* a stock's code fills in its carbon type and ash size if they're blank */
+function stockFill(vals) {
+  const code = String(vals.stk_code || ""); if (!code) return;
+  if (!vals.stk_ctype) vals.stk_ctype = /^M-C/.test(code) ? "Coke" : /^M-G/.test(code) ? "Graphite" : /^A/.test(code) ? "None" : "";
+  if (!vals.stk_ash_size) vals.stk_ash_size = /<125/.test(code) ? "<125 µm" : "Original";
+}
+function stockText(vals) { const c = num(vals.stk_carbon) || 0, a = num(vals.stk_ash) || 0; if (!(c + a > 0)) return "Enter the carbon and fly ash masses";
+  return fmtN(100 * c / (c + a)) + " % carbon · " + fmtN(c + a) + " g · " + fmtN(100 * c / (c + a) * (1 - PROG_WATER / 100)) + " % of a mix with " + PROG_WATER + " % water" }
+function addStockProtocol() {
+  const mix = D().protocols.find(p => !p.deleted && p.kind === "fjhmix"); if (!mix) return false; let changed = false;
+  const F = (key, step, section, label, type, unit, extra) => Object.assign({ key, step, section, label, type, unit: unit || "", options: [], required: false, keep: false, hint: "" }, extra || {});
+  if (!stockProto()) {
+    D().protocols.push({ id: uid("r"), kind: "fjhstock", idPrefix: "STK", name: "FJH stock mixture", projectId: mix.projectId, docLink: "", updated: Date.now(),
+      description: "A dry blend made in bulk (carbon + fly ash, or plain ash). Mixtures are then made from the stocks plus water, and the app works out the carbon from the stock masses.",
+      fields: [F("stk_code", 1, "Stock", "Stock", "Choice", "", { options: STOCK_CODES, required: true, hint: "M-C coke stock, M-G graphite stock, A plain ash; <125 = sieved ash" }),
+        F("stk_ctype", 2, "Stock", "Carbon type", "Choice", "", { options: ["Coke", "Graphite", "None"] }),
+        F("stk_carbon", 3, "Stock", "Carbon", "Number", "g"), F("stk_ash", 4, "Stock", "Fly ash", "Number", "g", { required: true }),
+        F("stk_ash_size", 5, "Stock", "Fly ash particle size", "Choice", "", { options: ["Original", "<125 µm"] }),
+        F("stk_lot", 6, "Stock", "Fly ash lot", "Text", "", { keep: true }), F("stk_mixing", 7, "Stock", "How it was blended", "Text", "", { keep: true }),
+        F("stk_calc", 8, "Stock", "Composition", "Calc", "", { calc: "stk" })] });
+    changed = true;
+  }
+  const sp = stockProto(); if (sp && !sp.projectId && mix.projectId) { sp.projectId = mix.projectId; sp.updated = Date.now(); changed = true }
+  if (!mix.fields.some(f => f.key === "stock1")) {
+    mix.fields.push(F("stock_calc", 0.1, "From stocks", "From stocks", "Calc", "", { calc: "mixstk" }));
+    STOCK_KEYS.forEach(i => mix.fields.push(F("stock" + i, 0.1 + i * 0.2, "From stocks", "Stock " + i, "Stock", "", {}), F("stock" + i + "_g", 0.2 + i * 0.2, "From stocks", "Stock " + i + " mass", "Number", "g")));
+    mix.description = "Make a fly ash and carbon mixture, from stocks or from separate ingredients. With stocks, pick them and their masses: the carbon, graphite, ash size and total mass are worked out for you. Water is a % of the total mass. Gives the mixture a batch ID that pellets can be linked to.";
+    mix.updated = Date.now(); changed = true;
+  }
+  mix.fields.forEach(f => { if (["total_mass", "carbon_type", "carbon_pct", "graphite_pct", "ash_size"].includes(f.key) && !f.fromStock) { f.fromStock = true; mix.updated = Date.now(); changed = true } });
+  return changed;
+}
+
+/* ---------- programme recipes from stocks ---------- */
+/* the latest stock with this code (a <125 µm condition falls back to the original-ash stock, with a warning) */
+const progStock = code => stockList().filter(s => stockCode(s) === code).sort((a, b) => b.created - a.created)[0] || null;
+function progStockRecipe(c) {
+  const M = +(P() || {}).mixMass || 15, w = PROG_WATER / 100, W = M * w, sol = M - W; const fine = c.size === "<125 µm"; const warn = [];
+  const pick = base => { const want = base + (fine ? "<125" : ""); let s = progStock(want);
+    if (!s && fine) { s = progStock(base); if (s) warn.push(base + " has original ash: there's no " + want + " stock, so this mixture won't be all <125 µm.") }
+    return { code: s ? stockCode(s) : want, s } };
+  const cd = c.C / 100 / (1 - w), gd = c.G / 100 / (1 - w), kd = cd - gd; const parts = []; let rest = sol;
+  for (const [base, frac] of [["M-G", gd], ["M-C", kd]]) { if (!(frac > 0)) continue; const p = pick(base); if (!p.s) return { missing: p.code, M, W };
+    const F = stockFrac(p.s); if (!(F.f > 0)) return { missing: p.code, M, W }; p.g = frac * sol / F.f; parts.push(p); rest -= p.g }
+  if (rest > 0.05) { const p = pick("A"); if (!p.s) return { missing: p.code, M, W }; p.g = rest; parts.push(p); rest = 0 }
+  if (rest < -0.05) warn.push("The stocks are too lean for " + c.C + " % carbon: the mix comes out " + fmtN(-rest) + " g heavy in solids.");
+  return { M, W, sol, parts, warn };
+}
+function progStockText(R) { return R.parts.map(p => p.code + " " + p.g.toFixed(2) + " g").concat(["water " + R.W.toFixed(2) + " g"]).join(" · ") + " (" + R.M + " g)" }
+/* stock needed by the mixtures not made yet (only the ones whose recipe is already decided) */
+function progStockNeed() {
+  const need = {}; progEntries().forEach(e => { if (e.mix || !progReady(e.cond)) return; const R = progStockRecipe(e.cond); (R.parts || []).forEach(p => { need[p.s.sampleId] = (need[p.s.sampleId] || 0) + p.g }) });
+  return Object.entries(need).map(([sid, g]) => { const s = sampleBy(sid); return { s, need: g, left: s ? stockLeft(s) : 0 } });
+}
+
 /* ---------- pellet testing programme ----------
    Fly ash pellet programme: 5 stages, 31 conditions, one mixture of 10 pellets (8 to test + 2 spares) per condition.
    A mixture made from the schedule carries s.prog (its condition ID) and s.progDef (the recipe it was made to), so
@@ -1557,7 +1660,7 @@ const progT = () => Object.assign({}, PROG_T0, (P() || {}).t || {});
 const progD = () => Object.assign({ Fhigh: 5000 }, (P() || {}).d || {});
 function progConds(d) {
   d = d || progD(); const out = [];
-  const c = (id, stage, o) => out.push(Object.assign({ id, stage, C: 30, G: 0, size: d.S || null, dry: PROG_REF_DRY, n: PROG_N, mixes: 1, role: "" }, o));
+  const c = (id, stage, o) => out.push(Object.assign({ id, stage, C: 40, G: 0, size: d.S || null, dry: PROG_REF_DRY, n: PROG_N, mixes: 1, role: "" }, o));
   const nv = k => d[k] == null || d[k] === "" ? null : +d[k];
   [2000, 3000, 4000, 5000].forEach((F, i) => c("S1-0" + (i + 1), 1, { size: "Original", F, role: i === 1 ? "Reference mix" : "" }));
   [2000, 3000, 4000, 5000].forEach((F, i) => c("S1-0" + (i + 5), 1, { size: "<125 µm", F }));
@@ -1565,8 +1668,8 @@ function progConds(d) {
   [0, 5, 10, 15].forEach((G, i) => { const a = G ? "" : "Anchor: repeats a Stage 1 condition"; c("S2-0" + (2 * i + 1), 2, { G, F: Fl, role: a }); c("S2-0" + (2 * i + 2), 2, { G, F: Fh, role: a }) });
   PROG_DRY.forEach((dry, i) => c("S3-0" + (i + 1), 3, { G: 0, F: Fs, dry, role: i === 3 ? "Anchor: repeats a Stage 2 condition" : "" }));
   PROG_DRY.forEach((dry, i) => c("S3-0" + (i + 5), 3, { G: Gs, F: Fs, dry, role: i === 3 ? "Anchor: repeats a Stage 2 condition" : "" }));
-  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 1), 4, { C, G: 0, F: Fs, dry: Ds, role: C === 30 ? "Anchor: repeats a Stage 3 condition" : "" }));
-  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 4), 4, { C, G: Gs, F: Fs, dry: Ds, role: C === 30 ? "Anchor: repeats a Stage 3 condition" : "" }));
+  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 1), 4, { C, G: 0, F: Fs, dry: Ds, role: C === 40 ? "Anchor: repeats a Stage 3 condition" : "" }));
+  [20, 30, 40].forEach((C, i) => c("S4-0" + (i + 4), 4, { C, G: Gs, F: Fs, dry: Ds, role: C === 40 ? "Anchor: repeats a Stage 3 condition" : "" }));
   c("S5-01", 5, { C: nv("C"), G: Gs, F: Fs, dry: Ds, n: 24, mixes: 3, role: "Confirmation run: Weibull statistics and spares for the first FJH shots" });
   return out;
 }
@@ -1574,7 +1677,10 @@ const progCond = (id, d) => progConds(d).find(c => c.id === id);
 const progReady = c => !!c && c.F != null && !!c.size && c.G != null && c.C != null && !!c.dry;
 const progStageReady = st => st.needs.every(k => progD()[k] != null && progD()[k] !== "");
 const progMix = () => D().protocols.find(p => !p.deleted && p.kind === "fjhmix");
-const progMixes = id => D().samples.filter(s => !s.deleted && s.prog === id).sort((a, b) => a.created - b.created);
+/* a mixture counts for its condition only if it was made to the condition's current recipe */
+const progMatch = (m, c) => { const d = m.progDef; return !d || !c || ["size", "C", "G", "F", "dry"].every(k => String(d[k]) === String(c[k])) };
+const progMixes = id => { const c = progCond(id); return D().samples.filter(s => !s.deleted && s.prog === id && progMatch(s, c)).sort((a, b) => a.created - b.created) };
+const progOld = () => D().samples.filter(s => !s.deleted && s.prog && !progMatch(s, progCond(s.prog)));
 const progDefOf = m => Object.assign({}, progCond(m.prog) || {}, m.progDef || {});
 const tsISO = ts => { const d = new Date(ts); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) };
 const isWork = iso => { const w = new Date(iso + "T12:00:00").getDay(); return w !== 0 && w !== 6 };
@@ -1589,7 +1695,7 @@ function progDryText(dry, short) {
     "110 °C after 24 h": short ? "24 h bench, then 110 °C 1 h" : "Leave on the bench for 24 h, then oven at 110 °C for 1 h, cool, then test" })[dry] || dry || "–";
 }
 function progLabel(c) { if (!c) return ""; const f = v => v == null ? "?" : v;
-  return [c.size || "S*?", "C " + f(c.C) + " %" + (c.G ? " (graphite " + c.G + " %)" : c.G == null ? " (graphite ?)" : ""), f(c.F) + " N", progDryText(c.dry, true)].join(" · ") }
+  return [c.size || "S*?", "carbon " + f(c.C) + " % of mix" + (c.G ? " (graphite " + c.G + " %)" : c.G == null ? " (graphite ?)" : ""), f(c.F) + " N", progDryText(c.dry, true)].join(" · ") }
 /* recipe in grams for one mixture: water is % of the total; fly ash, coke and graphite split the solids */
 function progRecipe(c, M) {
   M = M || +(P() || {}).mixMass || 15; const W = M * PROG_WATER / 100, sol = M - W;
@@ -1699,17 +1805,19 @@ function progAhead(T0) {
 
 /* ---------- presets that open the existing forms filled in ---------- */
 function progMixPreset(e) {
-  const mp = progMix(); const c = e.cond; const keys = new Set((mp.fields || []).map(f => f.key)); const R = progRecipe(c);
-  const v = { total_mass: String(+R.M.toFixed(2)), carbon_type: "Coke", carbon_pct: String(c.C - c.G), graphite_pct: String(c.G), carbon_size: "Original", ash_size: c.size, water_pct: String(PROG_WATER), pellets_made: String(PROG_MAKE),
+  const mp = progMix(); const c = e.cond; const keys = new Set((mp.fields || []).map(f => f.key)); const R = progStockRecipe(c);
+  const v = { carbon_size: "Original", water_pct: String(PROG_WATER), pellets_made: String(PROG_MAKE),
+    stock1: "", stock1_g: "", stock2: "", stock2_g: "", stock3: "", stock3_g: "",
     dry1_method: "", dry1_temp: "", dry1_time: "", dry2: "", dry2_method: "", dry2_temp: "", dry2_time: "" };
   if (c.dry === "Air dry 48 h") Object.assign(v, { dry1_method: "Air", dry1_time: "48" });
   if (c.dry === "60 °C for 3 h") Object.assign(v, { dry1_method: "Oven", dry1_temp: "60", dry1_time: "3" });
   if (c.dry === "110 °C immediately") Object.assign(v, { dry1_method: "Oven", dry1_temp: "110", dry1_time: "1" });
   if (c.dry === PROG_REF_DRY) Object.assign(v, { dry1_method: "Air", dry1_time: "24", dry2: "Second stage drying performed", dry2_method: "Oven", dry2_temp: "110", dry2_time: "1" });
+  (R.parts || []).forEach((p, i) => { v["stock" + (i + 1)] = p.s.sampleId; v["stock" + (i + 1) + "_g"] = String(+p.g.toFixed(2)) });
   Object.keys(v).forEach(k => { if (!keys.has(k)) delete v[k] });
   const def = { id: c.id, stage: c.stage, size: c.size, C: c.C, G: c.G, F: c.F, dry: c.dry, n: c.n, mixes: c.mixes };
   return { protocol: mp.id, vals: v, loc: progFreeRun(PROG_MAKE), tag: { prog: c.id, progDef: def },
-    banner: () => progBanner(c, "Mixture " + (c.mixes > 1 ? e.k + " of " + c.mixes + " " : "") + "for " + c.id + ". Check the amounts, pick where the pellets go, then save.", [["Weigh out", progRecipeText(R)]]),
+    banner: () => progBanner(c, "Mixture " + (c.mixes > 1 ? e.k + " of " + c.mixes + " " : "") + "for " + c.id + ". Weigh out the stocks and water below, pick where the pellets go, then save.", [["Weigh out", progStockText(R)]].concat((R.warn || []).map(x => ["⚠", x]))),
     after: () => { S.runPre = null; back(); return true } };
 }
 function progPressPreset(mix) {
@@ -1742,8 +1850,11 @@ function progMixCard(e, today) {
   const c = e.cond; const m = e.mix; const card = el("section", { class: "card sec" });
   const head = el("div", { class: "sec-head" }, el("h2", { class: "mono", text: c.id + (c.mixes > 1 ? " · mix " + e.k + "/" + c.mixes : "") }), el("p", { text: progLabel(c) + (c.role ? " · " + c.role : "") }));
   card.append(head);
-  if (!m) { const R = progRecipe(c);
-    card.append(el("dl", { class: "dl2" }, ...[["Fly ash (" + c.size + ")", R.ash.toFixed(2) + " g"], ["Coke", R.coke.toFixed(2) + " g"], ["Graphite", R.graphite.toFixed(2) + " g"], ["Water (" + PROG_WATER + " %)", R.water.toFixed(2) + " g"], ["Total", R.M + " g → " + PROG_MAKE + " pellets"], ["Press at", c.F + " N"], ["Drying", progDryText(c.dry)]].map(([k, x]) => el("div", {}, el("dt", { text: k }), el("dd", { text: x })))),
+  if (!m) { const R = progStockRecipe(c);
+    if (R.missing) { card.append(el("p", { class: "small amber-t", text: "No " + R.missing + " stock logged yet. Log it under FJH stock mixture and this card fills in." }),
+      el("button", { class: "ghost slim", type: "button", text: "Log a stock mixture", onclick: () => { const sp = stockProto(); if (sp) go("run", { id: sp.id }) } })); return card }
+    card.append(el("dl", { class: "dl2" }, ...R.parts.map(p => [p.code + " · " + p.s.sampleId, p.g.toFixed(2) + " g"]).concat([["Water (" + PROG_WATER + " %)", R.W.toFixed(2) + " g"], ["Total", R.M + " g → " + PROG_MAKE + " pellets"], ["Press at", c.F + " N"], ["Drying", progDryText(c.dry)]]).map(([k, x]) => el("div", {}, el("dt", { text: k }), el("dd", { text: x })))),
+      ...(R.warn || []).map(x => el("p", { class: "fine amber-t", text: "⚠ " + x })),
       today ? el("button", { class: "primary slim", type: "button", text: "1 · Log the mixture", onclick: () => startMix(e) }) : null);
     return card }
   const st = batchStats(m); const pp = pelletProto(); const K = progKeys(pp); const pel = pelletsOf(m);
@@ -1797,6 +1908,9 @@ VIEWS.prog = view => {
     view.append(el("p", { class: "fine", text: "Make them in this order: " + T0.curE.map(e => e.id).join(" → ") + ". Log each mixture, press its " + PROG_MAKE + " pellets, then the next." }));
     T0.curE.forEach(e => view.append(progMixCard(e, true)));
   }
+  const short = progStockNeed().filter(x => x.need > x.left + 0.01);
+  short.forEach(x => view.append(el("p", { class: "fine amber-t", text: "⚠ " + stockCode(x.s) + " (" + x.s.sampleId + "): the mixtures planned so far need " + x.need.toFixed(1) + " g, " + x.left.toFixed(1) + " g left. Make more before you run out." })));
+  const old = progOld(); if (old.length) view.append(el("p", { class: "fine muted", text: old.length + (old.length === 1 ? " mixture was" : " mixtures were") + " made to an earlier recipe and " + (old.length === 1 ? "doesn't" : "don't") + " count: " + old.map(m => m.sampleId + " (" + m.prog + ")").join(", ") + "." }));
   if (waiting.length) view.append(el("div", { class: "card list" }, el("div", { class: "eyebrow", text: "Standing or drying (" + waiting.length + ")" }),
     ...waiting.map(w => el("div", { class: "kv" }, el("span", { text: w.m.sampleId + " · " + w.m.prog }), el("span", { text: "test " + fmtDay(w.td) })))));
   /* 3 · decisions */
@@ -1849,7 +1963,7 @@ VIEWS.prog = view => {
 async function progSetDecision(k, v) {
   const pr = P(); const d = Object.assign({}, pr.d); const later = PROG_STAGES.filter(st => st.needs.includes(k));
   const used = later.flatMap(st => stageConds(st.n)).filter(c => progMixes(c.id).length);
-  if (used.length && !S.decArm) { S.decArm = k; return toast(used.length + " later mixtures were already made with the old value; they keep it. Tap again to change.", true) }
+  if (used.length && !S.decArm) { S.decArm = k; return toast(used.length + " later mixtures were already made with the old value; they will stop counting. Tap again to change.", true) }
   S.decArm = null; if (v == null) delete d[k]; else d[k] = v; pr.d = d; pr.updated = Date.now(); await persist(); render();
 }
 
