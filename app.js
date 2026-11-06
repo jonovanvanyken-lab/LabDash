@@ -7,8 +7,8 @@
 const $ = id => document.getElementById(id);
 const te = new TextEncoder(), td = new TextDecoder();
 const ITER = 600000;
-const APP_VERSION = "1.25";
-const WHATS_NEW = "Pellet programme: a programme batch always sets its own press force; a mixture pressed at the wrong force can count as the condition it matches";
+const APP_VERSION = "1.26";
+const WHATS_NEW = "Pellet programme: Stage 1 compares coke particle size (M-C vs M-C<125); fly ash stays original";
 const rnd = n => crypto.getRandomValues(new Uint8Array(n));
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s) }
 function unb64(s) { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
@@ -1573,8 +1573,9 @@ function stockCalcText(vals) {
 function stockFill(vals) {
   const code = String(vals.stk_code || ""); if (!code) return;
   if (!vals.stk_ctype) vals.stk_ctype = /^M-C/.test(code) ? "Coke" : /^M-G/.test(code) ? "Graphite" : /^A/.test(code) ? "None" : "";
-  if (!vals.stk_ash_size) vals.stk_ash_size = /<125/.test(code) ? "<125 µm" : "Original";
-  if (!vals.stk_carbon_size && vals.stk_ctype && vals.stk_ctype !== "None") vals.stk_carbon_size = "Original";
+  /* "<125" in a carbon stock's code means the carbon was sieved; in a plain ash stock (A<125) the ash */
+  if (!vals.stk_ash_size) vals.stk_ash_size = /^A/.test(code) && /<125/.test(code) ? "<125 µm" : "Original";
+  if (!vals.stk_carbon_size && vals.stk_ctype && vals.stk_ctype !== "None") vals.stk_carbon_size = /<125/.test(code) ? "<125 µm" : "Original";
 }
 function stockText(vals) { const c = num(vals.stk_carbon) || 0, a = num(vals.stk_ash) || 0; if (!(c + a > 0)) return "Enter the carbon and fly ash masses";
   return fmtN(100 * c / (c + a)) + " % carbon · " + fmtN(c + a) + " g · " + fmtN(100 * c / (c + a) * (1 - PROG_WATER / 100)) + " % of a mix with " + PROG_WATER + " % water" }
@@ -1584,7 +1585,7 @@ function addStockProtocol() {
   if (!stockProto()) {
     D().protocols.push({ id: uid("r"), kind: "fjhstock", idPrefix: "STK", name: "FJH stock mixture", projectId: mix.projectId, docLink: "", updated: Date.now(),
       description: "A dry blend made in bulk (carbon + fly ash, or plain ash). Mixtures are then made from the stocks plus water, and the app works out the carbon from the stock masses.",
-      fields: [F("stk_code", 1, "Stock", "Stock", "Choice", "", { options: STOCK_CODES, required: true, hint: "M-C coke stock, M-G graphite stock, A plain ash; <125 = sieved ash" }),
+      fields: [F("stk_code", 1, "Stock", "Stock", "Choice", "", { options: STOCK_CODES, required: true, hint: "M-C coke stock, M-G graphite stock, A plain ash; <125 = the carbon was sieved (A<125: sieved ash)" }),
         F("stk_ctype", 2, "Stock", "Carbon type", "Choice", "", { options: ["Coke", "Graphite", "None"] }),
         F("stk_carbon_size", 2.5, "Stock", "Carbon particle size", "Choice", "", { options: ["Original", "<125 µm"] }),
         F("stk_carbon", 3, "Stock", "Carbon", "Number", "g"), F("stk_ash", 4, "Stock", "Fly ash", "Number", "g", { required: true }),
@@ -1594,6 +1595,7 @@ function addStockProtocol() {
     changed = true;
   }
   const sp = stockProto(); if (sp && !sp.projectId && mix.projectId) { sp.projectId = mix.projectId; sp.updated = Date.now(); changed = true }
+  const hc = sp && sp.fields.find(f => f.key === "stk_code" && /= sieved ash"?$/.test(f.hint || "")); if (hc) { hc.hint = "M-C coke stock, M-G graphite stock, A plain ash; <125 = the carbon was sieved (A<125: sieved ash)"; sp.updated = Date.now(); changed = true }
   if (sp && !sp.fields.some(f => f.key === "stk_carbon_size")) { sp.fields.push(F("stk_carbon_size", 2.5, "Stock", "Carbon particle size", "Choice", "", { options: ["Original", "<125 µm"] })); sp.updated = Date.now(); changed = true }
   if (!mix.fields.some(f => f.key === "stock1")) {
     mix.fields.push(F("stock_calc", 0.1, "From stocks", "From stocks", "Calc", "", { calc: "mixstk" }));
@@ -1610,9 +1612,8 @@ function addStockProtocol() {
 const progStock = code => stockList().filter(s => stockCode(s) === code).sort((a, b) => b.created - a.created)[0] || null;
 function progStockRecipe(c) {
   const M = +(P() || {}).mixMass || 15, w = PROG_WATER / 100, W = M * w, sol = M - W; const fine = c.size === "<125 µm"; const warn = [];
-  const pick = base => { const want = base + (fine ? "<125" : ""); let s = progStock(want);
-    if (!s && fine) { s = progStock(base); if (s) warn.push(base + " has original ash: there's no " + want + " stock, so this mixture won't be all <125 µm.") }
-    return { code: s ? stockCode(s) : want, s } };
+  /* the size factor is the coke: M-C<125 has sieved coke; graphite and plain ash stocks stay as they are */
+  const pick = base => { const want = base + (fine && base === "M-C" ? "<125" : ""); const s = progStock(want); return { code: s ? stockCode(s) : want, s } };
   const cd = c.C / 100 / (1 - w), gd = c.G / 100 / (1 - w), kd = cd - gd; const parts = []; let rest = sol;
   for (const [base, frac] of [["M-G", gd], ["M-C", kd]]) { if (!(frac > 0)) continue; const p = pick(base); if (!p.s) return { missing: p.code, M, W };
     const F = stockFrac(p.s); if (!(F.f > 0)) return { missing: p.code, M, W }; p.g = frac * sol / F.f; parts.push(p); rest -= p.g }
@@ -1652,7 +1653,7 @@ const PROG_DAYS = {
   5: [["S5-01", "S5-01", "S5-01"]]
 };
 const PROG_DEC = {
-  S: { label: "Fly ash particle size S*", after: 1, opts: ["Original", "<125 µm"], hint: "Prefer Original unless <125 µm is clearly better: sieving adds a step, loses the coarse fraction and changes the ash chemistry." },
+  S: { label: "Coke particle size S*", after: 1, opts: ["Original", "<125 µm"], hint: "Prefer Original unless <125 µm coke is clearly better: sieving adds a step and loses the coarse fraction." },
   Flow: { label: "Stage 2 low force F_low", after: 1, unit: "N", opts: [2000, 3000, 4000], hint: "Lowest force that passes the strength and survival targets in Stage 1. If that is 5000 N, use 4000 N." },
   Fstar: { label: "Force F*", after: 2, unit: "N", opts: null, hint: "Lowest force that meets all targets with the chosen graphite level." },
   G: { label: "Graphite G*", after: 2, unit: "%", opts: [0, 5, 10, 15], hint: "Lowest graphite level that brings resistance near target with CV within limit." },
@@ -1700,7 +1701,7 @@ function progDryText(dry, short) {
     "110 °C after 24 h": short ? "24 h bench, then 110 °C 1 h" : "Leave on the bench for 24 h, then oven at 110 °C for 1 h, cool, then test" })[dry] || dry || "–";
 }
 function progLabel(c) { if (!c) return ""; const f = v => v == null ? "?" : v;
-  return [c.size || "S*?", "carbon " + f(c.C) + " % of mix" + (c.G ? " (graphite " + c.G + " %)" : c.G == null ? " (graphite ?)" : ""), f(c.F) + " N", progDryText(c.dry, true)].join(" · ") }
+  return [c.size ? "coke " + (c.size === "<125 µm" ? "<125 µm" : "original") : "coke S*?", "carbon " + f(c.C) + " % of mix" + (c.G ? " (graphite " + c.G + " %)" : c.G == null ? " (graphite ?)" : ""), f(c.F) + " N", progDryText(c.dry, true)].join(" · ") }
 /* recipe in grams for one mixture: water is % of the total; fly ash, coke and graphite split the solids */
 function progRecipe(c, M) {
   M = M || +(P() || {}).mixMass || 15; const W = M * PROG_WATER / 100, sol = M - W;
@@ -1752,7 +1753,7 @@ function progSuggest(k) {
     const o = by("Original"), f = by("<125 µm"); if (![...o, ...f].some(x => x.tested)) return null;
     const pass = a => a.filter(x => x.all).length, ms = a => mean(a.map(x => x.sMean).filter(v => !isNaN(v)));
     const fine = pass(f) > pass(o) && ms(f) > 1.1 * ms(o);
-    return { v: fine ? "<125 µm" : "Original", why: "Original passes " + pass(o) + "/4 forces (mean " + fmtN(ms(o)) + " kPa); <125 µm passes " + pass(f) + "/4 (" + fmtN(ms(f)) + " kPa)." + (fine ? " Sieving is clearly better." : " Sieving isn't clearly better.") } }
+    return { v: fine ? "<125 µm" : "Original", why: "Original coke passes " + pass(o) + "/4 forces (mean " + fmtN(ms(o)) + " kPa); <125 µm passes " + pass(f) + "/4 (" + fmtN(ms(f)) + " kPa)." + (fine ? " Sieving is clearly better." : " Sieving isn't clearly better.") } }
   if (k === "Flow") { if (!d.S) return null; const ok = cs(1).filter(c => c.size === d.S).filter(c => { const x = st(c.id); return x.okS && x.okSurv });
     if (!ok.length) return { v: null, why: "No force passed both the strength and survival targets at " + d.S + "." };
     const F = Math.min(...ok.map(c => c.F)); return { v: F === 5000 ? 4000 : F, why: "Lowest force passing strength and survival at " + d.S + ": " + F + " N" + (F === 5000 ? ", so 4000 N per the rule." : ".") } }

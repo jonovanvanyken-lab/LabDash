@@ -329,7 +329,7 @@ def programme_sheets(docs, samples, protos, sheet):
         mv = (by_id.get(r[3]) or {}).get("values") or {}
         r.insert(10, ", ".join(f'{(stk.get(mv.get(f"stock{i}")) or {}).get("values", {}).get("stk_code", mv.get(f"stock{i}"))} {mv.get(f"stock{i}_g")} g'
                                 for i in (1, 2, 3) if mv.get(f"stock{i}")))
-    sheet("Programme", ["Pellet", "Condition", "Stage", "Mixture", "Fly ash size", "Total carbon (% of mix)", "Graphite (% of mix)", "Coke (% of mix)", "Force (N)", "Drying", "Stocks",
+    sheet("Programme", ["Pellet", "Condition", "Stage", "Mixture", "Coke size", "Total carbon (% of mix)", "Graphite (% of mix)", "Coke (% of mix)", "Force (N)", "Drying", "Stocks",
                         "Pressed", "Green mass (g)", "Dry mass (g)", "Dry D (mm)", "Dry H (mm)", "Resistance (Ω)", "Breaking force (N)", "Failure mode",
                         "Mass loss on drying (%)", "Dry density (g/cm³)", "Resistivity (Ω·cm)", "Axial strength (kPa)", "Removed", "Notes"], rows)
     sd = lambda a: round(stx.stdev(a), 3) if len(a) > 1 else None
@@ -479,7 +479,8 @@ def write_workbook(docs, path):
 # typed a new value into is written to that sample in LabDash, then the file moves to Inbox\Done with a report next to it.
 # Blank cells never clear anything, calculated columns are ignored, and a value that LabDash itself held earlier (an
 # out-of-date copy) is not written back over a newer one.
-INBOX_TYPES = {"Number", "Text", "Choice", "Check"}
+INBOX_TYPES = {"Number", "Text", "Choice", "Check", "Stock", "Calc"}
+CLEAR = "(clear)"  # type this in a cell to blank that value in LabDash
 
 
 def _num(v):
@@ -563,10 +564,14 @@ def plan_inbox(docs, st, path):
             for i, f in todo:
                 new = r[i] if i < len(r) else None
                 if new is None or str(new).strip() == "":
-                    continue  # blank cells never clear anything
+                    continue  # blank cells never clear anything; type (clear) to blank a value
                 key = f["key"] if f else "__notes"
                 label = f["label"] if f else "Notes"
                 old = vals.get(key) if f else s.get("notes", "")
+                if str(new).strip().lower() == CLEAR:
+                    if old is not None and str(old).strip() != "":
+                        changes.append({"sample": s, "key": key, "label": label, "old": old, "new": None})
+                    continue
                 if same_val(new, old):
                     continue
                 if vkey(new) in hist.get(key, []):
@@ -580,7 +585,10 @@ def plan_inbox(docs, st, path):
                     if f.get("showIf") and str(vals.get(f["showIf"].get("key"), "")) != str(f["showIf"].get("equals")):
                         notes.append(f"{sid} {label}: this field is hidden for this sample in the app, so it was skipped.")
                         continue
-                    if ftype == "Number":
+                    if ftype == "Stock" and not any(x.get("sampleId") == str(new).strip() for x in samples):
+                        notes.append(f"{sid} {label}: {new!r} isn't a stock in LabDash, so it was skipped.")
+                        continue
+                    if ftype in ("Number", "Calc"):
                         n = _num(new)
                         if n is None:
                             notes.append(f"{sid} {label}: {new!r} isn't a number, so it was skipped.")
@@ -604,7 +612,9 @@ def apply_changes(changes):
     for c in changes:
         s = c["sample"]
         if c["key"] == "__notes":
-            s["notes"] = c["new"]
+            s["notes"] = c["new"] or ""
+        elif c["new"] is None:  # (clear)
+            (s.get("values") or {}).pop(c["key"], None)
         else:
             s.setdefault("values", {})[c["key"]] = c["new"]
             diff = s.get("batchDiff")
